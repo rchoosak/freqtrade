@@ -44,6 +44,23 @@ def test_parse_mt5_config_respects_explicit_trade_symbols() -> None:
     assert bot.symbols == ("EURUSD",)
 
 
+def test_parse_mt5_config_reads_pending_expiry() -> None:
+    section = _valid_section()
+    section["pending_expiry"] = 12
+
+    _, bot = parse_mt5_config(section)
+
+    assert bot.pending_expiry == 12
+
+
+def test_parse_mt5_config_rejects_negative_pending_expiry() -> None:
+    section = _valid_section()
+    section["pending_expiry"] = -1
+
+    with pytest.raises(OperationalException, match="pending_expiry"):
+        parse_mt5_config(section)
+
+
 def test_parse_mt5_config_rejects_missing_symbols() -> None:
     with pytest.raises(OperationalException, match="symbols"):
         parse_mt5_config({"dry_run": True})

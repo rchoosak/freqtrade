@@ -22,6 +22,8 @@ class Signal:
     stop_loss: float | None = None
     take_profit: float | None = None
     comment: str | None = None
+    # Epoch-seconds expiry for a pending entry (broker auto-cancels at that time).
+    expiration: int | None = None
 
     def __post_init__(self) -> None:
         if self.order_kind != "market" and self.price is None:

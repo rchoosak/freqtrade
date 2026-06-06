@@ -93,6 +93,7 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
     "poll_interval": 5.0,
     "warmup_bars": 200,
     "reconcile_interval": 12,
+    "pending_expiry": 24,
     "db_path": "mt5_trade.sqlite",
     "strategy": {"fast": 10, "slow": 30},
     "replay_data": "user_data/mt5_bars.json",
@@ -117,6 +118,8 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
   and where to write the JSON cache (which `backtest-mt5`/`replay_data` then consume).
 - `history_from` / `history_to` (ISO datetimes, optional) make `download-data-mt5` fetch a
   date range instead of the most-recent `history_bars`.
+- `pending_expiry` (optional, live only) cancels a resting pending order after it has lived this
+  many iterations; `0` disables bot-side expiry.
 
 ## Execution Plan
 
@@ -175,8 +178,16 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
    `LiveMT5DataFeed.bars_range` / `MT5HistoryDownloader.download_range`; `download-data-mt5`
    uses `history_from`/`history_to` when set, else the most-recent `history_bars`.
 
-**Phase 6 — Remaining live integration (future)**
-- Pending-order expiry policies and richer order metadata.
+**Phase 6 — Pending-order expiry + richer order metadata (implemented offline)**
+1. Broker-side expiry: `MT5OrderRequest.expiration` (epoch seconds) and `Signal.expiration` flow
+   to the order request; the gateway sets `ORDER_TIME_SPECIFIED` + `expiration` on pending orders
+   (ignored for market orders) so the broker auto-cancels at the deadline.
+2. Bot-side expiry: `MT5BotConfig.pending_expiry` (iterations); the bot cancels a resting order
+   that has lived past the limit, independent of the broker.
+3. Richer order metadata: `MT5TradeStore.mt5_orders` records `order_kind`, `price`, and
+   `expiration` alongside each order.
+
+**Phase 7 — Remaining live integration (future)**
 - End-to-end validation on a Windows host against a demo MT5 terminal (the only path that
   cannot be exercised off-Windows).
 

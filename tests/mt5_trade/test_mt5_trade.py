@@ -502,3 +502,28 @@ def test_gateway_open_orders_maps_pending_orders() -> None:
     assert orders[0].ticket == 900
     assert orders[1].side == "sell"
     assert orders[1].ticket == 901
+
+
+def test_gateway_sets_expiration_on_pending_order(bridge_config: MT5BridgeConfig) -> None:
+    gateway = LazyMT5Gateway(bridge_config, mt5_module=FakeMT5())
+
+    request = gateway.build_order_send_request(
+        MT5OrderRequest(
+            symbol="EUR/USD", side="buy", volume=0.01,
+            order_kind="limit", price=1.07, expiration=1700000000,
+        )
+    )
+
+    assert request["type_time"] == FakeMT5.ORDER_TIME_SPECIFIED
+    assert request["expiration"] == 1700000000
+
+
+def test_gateway_ignores_expiration_on_market_order(bridge_config: MT5BridgeConfig) -> None:
+    gateway = LazyMT5Gateway(bridge_config, mt5_module=FakeMT5())
+
+    request = gateway.build_order_send_request(
+        MT5OrderRequest(symbol="EUR/USD", side="buy", volume=0.01, expiration=1700000000)
+    )
+
+    assert request["type_time"] == FakeMT5.ORDER_TIME_GTC
+    assert "expiration" not in request

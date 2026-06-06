@@ -125,6 +125,8 @@ class MT5BotConfig:
     warmup_bars: int = 200
     db_path: str = "mt5_trade.sqlite"
     reconcile_interval: int = 0
+    # Iterations a resting pending order may live before the bot cancels it (0 = never).
+    pending_expiry: int = 0
     symbols: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -136,6 +138,8 @@ class MT5BotConfig:
             raise ValueError(
                 f"Invalid reconcile_interval {self.reconcile_interval!r}. Expected >= 0."
             )
+        if self.pending_expiry < 0:
+            raise ValueError(f"Invalid pending_expiry {self.pending_expiry!r}. Expected >= 0.")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MT5BotConfig:
@@ -145,6 +149,7 @@ class MT5BotConfig:
             warmup_bars=int(data.get("warmup_bars", 200)),
             db_path=str(data.get("db_path", "mt5_trade.sqlite")),
             reconcile_interval=int(data.get("reconcile_interval", 0)),
+            pending_expiry=int(data.get("pending_expiry", 0)),
             symbols=tuple(str(s) for s in data.get("symbols", ())),
         )
 
@@ -163,6 +168,8 @@ class MT5OrderRequest:
     deviation: int | None = None
     magic: int | None = None
     comment: str | None = None
+    # Epoch-seconds expiry for a pending order; the broker auto-cancels it at that time.
+    expiration: int | None = None
 
     def __post_init__(self) -> None:
         _validate_literal("side", self.side, get_args(OrderSide))

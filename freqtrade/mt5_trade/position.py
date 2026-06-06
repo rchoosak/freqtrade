@@ -23,6 +23,7 @@ class OrderIntent:
     reason: str
     order_kind: OrderKind = "market"
     price: float | None = None
+    expiration: int | None = None
 
 
 def plan_transitions(
@@ -63,6 +64,7 @@ def plan_transitions(
             reason="open",
             order_kind=signal.order_kind,
             price=signal.price,
+            expiration=signal.expiration,
         )
     )
     return intents

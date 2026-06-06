@@ -251,7 +251,7 @@ class LazyMT5Gateway:
             "deviation": order.deviation if order.deviation is not None else self._config.deviation,
             "magic": order.magic if order.magic is not None else self._config.magic,
             "comment": order.comment or order.client_order_id or self._config.comment,
-            "type_time": self._type_time(),
+            "type_time": self._type_time(order),
             "type_filling": self._type_filling(order, symbol_info),
         }
 
@@ -269,6 +269,9 @@ class LazyMT5Gateway:
             request["sl"] = round(order.stop_loss, mapping.price_precision)
         if order.take_profit is not None:
             request["tp"] = round(order.take_profit, mapping.price_precision)
+        # A broker-side expiry only applies to resting (pending) orders.
+        if order.expiration is not None and order.order_kind != "market":
+            request["expiration"] = order.expiration
 
         return request
 
@@ -290,7 +293,10 @@ class LazyMT5Gateway:
             "ORDER_TYPE_BUY_STOP" if order.side == "buy" else "ORDER_TYPE_SELL_STOP",
         )
 
-    def _type_time(self) -> int:
+    def _type_time(self, order: MT5OrderRequest) -> int:
+        # An expiry timestamp switches the order to "specified time"; otherwise good-till-cancel.
+        if order.expiration is not None and order.order_kind != "market":
+            return getattr(self.mt5, "ORDER_TIME_SPECIFIED", 2)
         return getattr(self.mt5, "ORDER_TIME_GTC", 0)
 
     def _type_filling(self, order: MT5OrderRequest, symbol_info: Any) -> int:

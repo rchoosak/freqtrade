@@ -48,6 +48,7 @@ class MT5ForexBot:
         self._max_consecutive_errors = max_consecutive_errors
         self._running = False
         self._order_seq = 0
+        self._iterations = 0
         # symbol -> (open order side, volume). Restored from the store on startup.
         self._positions: dict[str, tuple[OrderSide, float]] = {
             symbol: (pos.side, pos.volume)  # type: ignore[misc]
@@ -56,6 +57,8 @@ class MT5ForexBot:
         # symbol -> (side, volume, ticket) for resting pending orders the bot placed.
         # In-memory only; rebuilt from the broker via reconcile() (no broker in dry-run).
         self._pendings: dict[str, tuple[OrderSide, float, int | None]] = {}
+        # symbol -> the iteration a pending order was placed, for bot-side expiry.
+        self._pending_placed: dict[str, int] = {}
 
     @property
     def running(self) -> bool:
@@ -63,12 +66,14 @@ class MT5ForexBot:
 
     def run_once(self) -> None:
         """Evaluate every configured symbol exactly once."""
+        self._iterations += 1
         for symbol in self._config.symbols:
             bars = self._feed.latest_bars(symbol, self._config.warmup_bars)
             if not bars:
                 continue
             signal = self._strategy.on_bar(symbol, bars)
             self._handle_signal(symbol, signal, reference_price=bars[-1].close)
+        self._expire_pendings()
 
     def run(self, sleep: Callable[[float], None] = time.sleep) -> None:
         """
@@ -156,12 +161,30 @@ class MT5ForexBot:
         for symbol, state in broker.items():
             # A filled order is a position now (handled above); don't double-occupy the slot.
             if symbol not in self._positions and self._pendings.get(symbol) != state:
-                self._pendings[symbol] = state
+                self._set_pending(symbol, state)
                 changes.append(f"{symbol} pending {state[0]}")
         for symbol in list(self._pendings):
             if symbol not in broker or symbol in self._positions:
-                self._pendings.pop(symbol, None)
+                self._clear_pending(symbol)
                 changes.append(f"{symbol} pending cleared")
+
+    def _set_pending(self, symbol: str, state: tuple[OrderSide, float, int | None]) -> None:
+        self._pendings[symbol] = state
+        self._pending_placed[symbol] = self._iterations
+
+    def _clear_pending(self, symbol: str) -> None:
+        self._pendings.pop(symbol, None)
+        self._pending_placed.pop(symbol, None)
+
+    def _expire_pendings(self) -> None:
+        """Cancel resting pending orders that have lived past ``pending_expiry`` iterations."""
+        limit = self._config.pending_expiry
+        if limit <= 0:
+            return
+        for symbol in list(self._pendings):
+            age = self._iterations - self._pending_placed.get(symbol, self._iterations)
+            if age >= limit:
+                self._cancel_pending(symbol, reason="expired")
 
     def _safe_reconcile(self) -> None:
         try:
@@ -210,7 +233,7 @@ class MT5ForexBot:
             # A resting limit/stop order is not a position yet; reconcile() adopts the fill later.
             oid = result.order_id
             ticket = int(oid) if oid is not None and oid.isdigit() else None
-            self._pendings[symbol] = (intent.side, intent.volume, ticket)
+            self._set_pending(symbol, (intent.side, intent.volume, ticket))
             self._notify(f"pending {intent.side} {symbol} {intent.volume} ({result.order_id})")
             return
 
@@ -229,16 +252,16 @@ class MT5ForexBot:
             f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"
         )
 
-    def _cancel_pending(self, symbol: str) -> None:
+    def _cancel_pending(self, symbol: str, reason: str = "cancelled") -> None:
         side, _volume, ticket = self._pendings[symbol]
         if ticket is None:
             # Nothing to cancel at the broker; just forget the local slot.
-            self._pendings.pop(symbol, None)
+            self._clear_pending(symbol)
             return
         result = self._bridge.cancel_order(ticket)
         if result.accepted:
-            self._pendings.pop(symbol, None)
-            self._notify(f"cancelled pending {side} {symbol} ({ticket})")
+            self._clear_pending(symbol)
+            self._notify(f"{reason} pending {side} {symbol} ({ticket})")
         else:
             logger.warning("Cancel pending %s (%s) rejected: %s", symbol, ticket, result.message)
             self._notify(f"cancel pending {symbol} rejected: {result.message}")
@@ -261,6 +284,7 @@ class MT5ForexBot:
             volume=intent.volume,
             order_kind=intent.order_kind,
             price=intent.price,
+            expiration=intent.expiration,
             # SL/TP travel on the broker-side modify, not the entry order, so the same code
             # path works for market entries and later adjustments.
             client_order_id=f"{symbol}-{self._order_seq}",

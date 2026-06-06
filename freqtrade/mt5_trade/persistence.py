@@ -40,6 +40,9 @@ class MT5TradeStore:
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
                 volume REAL NOT NULL,
+                order_kind TEXT,
+                price REAL,
+                expiration INTEGER,
                 accepted INTEGER NOT NULL,
                 retcode INTEGER,
                 message TEXT,
@@ -60,8 +63,9 @@ class MT5TradeStore:
         self._conn.execute(
             """
             INSERT INTO mt5_orders
-                (client_order_id, order_id, symbol, side, volume, accepted, retcode, message, ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (client_order_id, order_id, symbol, side, volume, order_kind, price,
+                 expiration, accepted, retcode, message, ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order.client_order_id,
@@ -69,6 +73,9 @@ class MT5TradeStore:
                 order.symbol,
                 order.side,
                 order.volume,
+                order.order_kind,
+                order.price,
+                order.expiration,
                 1 if result.accepted else 0,
                 result.retcode,
                 result.message,
