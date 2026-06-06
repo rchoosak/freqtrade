@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+from freqtrade.mt5_trade.models import MT5OrderRequest, MT5OrderResult
+from freqtrade.mt5_trade.persistence import MT5TradeStore
+
+
+def test_store_records_orders() -> None:
+    store = MT5TradeStore(":memory:")
+    order = MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.01, client_order_id="c1")
+    result = MT5OrderResult(accepted=True, order_id="999", retcode=10009, message="done")
+
+    store.record_order(order, result)
+
+    assert store.order_count() == 1
+
+
+def test_store_open_and_close_position() -> None:
+    store = MT5TradeStore(":memory:")
+
+    store.open_position("EURUSD", "buy", 0.02, 1.085)
+    positions = store.open_positions()
+    assert positions["EURUSD"].side == "buy"
+    assert positions["EURUSD"].volume == 0.02
+    assert positions["EURUSD"].entry_price == 1.085
+
+    # Re-opening the same symbol replaces the row rather than duplicating it.
+    store.open_position("EURUSD", "sell", 0.03, 1.090)
+    assert store.open_positions()["EURUSD"].side == "sell"
+
+    store.close_position("EURUSD")
+    assert store.open_positions() == {}
+
+
+def test_store_persists_across_connections(tmp_path) -> None:
+    db_path = str(tmp_path / "trades.sqlite")
+    store = MT5TradeStore(db_path)
+    store.open_position("EURUSD", "buy", 0.01, 1.10)
+    store.close()
+
+    reopened = MT5TradeStore(db_path)
+    assert "EURUSD" in reopened.open_positions()

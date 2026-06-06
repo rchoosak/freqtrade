@@ -414,6 +414,7 @@ class Arguments:
             start_strategy_update,
             start_test_pairlist,
             start_trading,
+            start_trading_mt5,
             start_webserver,
         )
 
@@ -430,6 +431,14 @@ class Arguments:
         )
         trade_cmd.set_defaults(func=start_trading)
         self._build_args(optionlist=ARGS_TRADE, parser=trade_cmd)
+
+        # Add trade-mt5 subcommand (MT5 forex bot; connects to a MetaTrader5 terminal directly)
+        trade_mt5_cmd = subparsers.add_parser(
+            "trade-mt5",
+            help="MT5 forex trading bot.",
+            parents=[_common_parser],
+        )
+        trade_mt5_cmd.set_defaults(func=start_trading_mt5)
 
         # add create-userdir subcommand
         create_userdir_cmd = subparsers.add_parser(

@@ -98,6 +98,9 @@ freqai_rl = [
   "torch; sys_platform != 'darwin' or platform_machine != 'x86_64'",
   "tqdm",
 ]
+"mt5-trade" = [
+  'MetaTrader5; platform_system == "Windows"',
+]
 develop = [
   "mypy",
   "pre-commit",

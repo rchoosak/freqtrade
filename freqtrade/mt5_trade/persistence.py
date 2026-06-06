@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import sqlite3
+import time
+from dataclasses import dataclass
+
+from freqtrade.mt5_trade.models import MT5OrderRequest, MT5OrderResult
+
+
+@dataclass(frozen=True)
+class OpenPosition:
+    symbol: str
+    side: str
+    volume: float
+    entry_price: float | None
+
+
+class MT5TradeStore:
+    """
+    Lightweight sqlite store for MT5 orders and open positions.
+
+    Deliberately standalone (stdlib ``sqlite3``) rather than reusing freqtrade's SQLAlchemy
+    Trade/Order models, which mirror CCXT exchange semantics. Records are for tracking and
+    auditing the forex bot; reconciliation against the broker is a later phase.
+    """
+
+    def __init__(self, db_path: str = ":memory:") -> None:
+        # check_same_thread=False keeps the single-threaded bot loop simple if reused elsewhere.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._create_schema()
+
+    def _create_schema(self) -> None:
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS mt5_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_order_id TEXT,
+                order_id TEXT,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                volume REAL NOT NULL,
+                accepted INTEGER NOT NULL,
+                retcode INTEGER,
+                message TEXT,
+                ts REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS mt5_positions (
+                symbol TEXT PRIMARY KEY,
+                side TEXT NOT NULL,
+                volume REAL NOT NULL,
+                entry_price REAL,
+                opened_ts REAL NOT NULL
+            );
+            """
+        )
+        self._conn.commit()
+
+    def record_order(self, order: MT5OrderRequest, result: MT5OrderResult) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO mt5_orders
+                (client_order_id, order_id, symbol, side, volume, accepted, retcode, message, ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                order.client_order_id,
+                result.order_id,
+                order.symbol,
+                order.side,
+                order.volume,
+                1 if result.accepted else 0,
+                result.retcode,
+                result.message,
+                time.time(),
+            ),
+        )
+        self._conn.commit()
+
+    def open_position(
+        self, symbol: str, side: str, volume: float, entry_price: float | None
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO mt5_positions (symbol, side, volume, entry_price, opened_ts)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                side=excluded.side,
+                volume=excluded.volume,
+                entry_price=excluded.entry_price,
+                opened_ts=excluded.opened_ts
+            """,
+            (symbol, side, volume, entry_price, time.time()),
+        )
+        self._conn.commit()
+
+    def close_position(self, symbol: str) -> None:
+        self._conn.execute("DELETE FROM mt5_positions WHERE symbol = ?", (symbol,))
+        self._conn.commit()
+
+    def open_positions(self) -> dict[str, OpenPosition]:
+        rows = self._conn.execute(
+            "SELECT symbol, side, volume, entry_price FROM mt5_positions"
+        ).fetchall()
+        return {
+            row["symbol"]: OpenPosition(
+                symbol=row["symbol"],
+                side=row["side"],
+                volume=row["volume"],
+                entry_price=row["entry_price"],
+            )
+            for row in rows
+        }
+
+    def order_count(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM mt5_orders").fetchone()[0])
+
+    def close(self) -> None:
+        self._conn.close()
