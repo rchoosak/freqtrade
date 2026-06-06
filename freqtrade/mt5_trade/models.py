@@ -184,6 +184,17 @@ class BrokerPosition:
 
 
 @dataclass(frozen=True)
+class BrokerOrder:
+    """A resting (pending) order as reported by the broker terminal."""
+
+    symbol: str
+    side: OrderSide
+    volume: float
+    price: float | None = None
+    ticket: int | None = None
+
+
+@dataclass(frozen=True)
 class MT5OrderResult:
     accepted: bool
     order_id: str | None

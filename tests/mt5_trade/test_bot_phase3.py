@@ -25,6 +25,9 @@ class FakeBridge:
     def broker_positions(self):
         return None
 
+    def broker_orders(self):
+        return None
+
     def close(self):
         self.closed = True
 

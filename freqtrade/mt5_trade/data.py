@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 from freqtrade.exceptions import OperationalException
 
@@ -27,6 +28,10 @@ class MT5DataFeed(ABC):
     @abstractmethod
     def latest_bars(self, symbol: str, count: int) -> list[MT5Bar]:
         """Return up to ``count`` most recent completed bars for ``symbol`` (oldest first)."""
+
+    def bars_range(self, symbol: str, date_from: datetime, date_to: datetime) -> list[MT5Bar]:
+        """Return completed bars for ``symbol`` within a date range. Optional per feed."""
+        raise NotImplementedError("This feed does not support date-range fetching.")
 
     def advance(self) -> bool:
         """
@@ -123,12 +128,21 @@ class LiveMT5DataFeed(MT5DataFeed):
     def latest_bars(self, symbol: str, count: int) -> list[MT5Bar]:
         self._gateway.connect()
         rates = self._gateway.mt5.copy_rates_from_pos(symbol, self._timeframe(), 0, count)
+        return self._to_bars(symbol, rates, "copy_rates_from_pos")
+
+    def bars_range(self, symbol: str, date_from: datetime, date_to: datetime) -> list[MT5Bar]:
+        self._gateway.connect()
+        rates = self._gateway.mt5.copy_rates_range(
+            symbol, self._timeframe(), date_from, date_to
+        )
+        return self._to_bars(symbol, rates, "copy_rates_range")
+
+    def _to_bars(self, symbol: str, rates: Any, source: str) -> list[MT5Bar]:
         if rates is None:
             raise OperationalException(
-                f"MT5 copy_rates_from_pos returned no data for {symbol}: "
-                f"{self._gateway.mt5.last_error()}"
+                f"MT5 {source} returned no data for {symbol}: {self._gateway.mt5.last_error()}"
             )
-        bars = [
+        return [
             MT5Bar(
                 time=int(row["time"]),
                 open=float(row["open"]),
@@ -139,7 +153,6 @@ class LiveMT5DataFeed(MT5DataFeed):
             )
             for row in rates
         ]
-        return bars
 
     def close(self) -> None:
         self._gateway.shutdown()

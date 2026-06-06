@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from freqtrade.mt5_trade.gateway import LazyMT5Gateway
 from freqtrade.mt5_trade.models import (
+    BrokerOrder,
     BrokerPosition,
     MT5BridgeConfig,
     MT5OrderRequest,
@@ -63,6 +64,12 @@ class MT5ExecutionBridge:
         if self._config.dry_run:
             return None
         return self._gateway.open_positions()
+
+    def broker_orders(self) -> list[BrokerOrder] | None:
+        """Resting pending orders from the broker, or None in dry-run (nothing to reconcile)."""
+        if self._config.dry_run:
+            return None
+        return self._gateway.open_orders()
 
     def close(self) -> None:
         self._gateway.shutdown()

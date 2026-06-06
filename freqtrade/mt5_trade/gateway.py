@@ -6,6 +6,7 @@ from typing import Any
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.models import (
+    BrokerOrder,
     BrokerPosition,
     MT5BridgeConfig,
     MT5OrderRequest,
@@ -173,6 +174,34 @@ class LazyMT5Gateway:
                 )
             )
         return positions
+
+    def open_orders(self) -> list[BrokerOrder]:
+        """Return the broker's currently resting (pending) orders, for reconciliation."""
+        self.ensure_connected()
+        raw = self.mt5.orders_get()
+        if not raw:
+            return []
+        buy_types = {
+            getattr(self.mt5, name)
+            for name in ("ORDER_TYPE_BUY", "ORDER_TYPE_BUY_LIMIT", "ORDER_TYPE_BUY_STOP")
+            if hasattr(self.mt5, name)
+        }
+        orders: list[BrokerOrder] = []
+        for order in raw:
+            order_type = getattr(order, "type", None)
+            # Fall back to MT5's even=buy / odd=sell convention if constants are unavailable.
+            is_buy = order_type in buy_types if buy_types else (int(order_type or 0) % 2 == 0)
+            side: Any = "buy" if is_buy else "sell"
+            orders.append(
+                BrokerOrder(
+                    symbol=str(getattr(order, "symbol", "")),
+                    side=side,
+                    volume=float(getattr(order, "volume_current", getattr(order, "volume", 0.0))),
+                    price=_optional_float(getattr(order, "price_open", None)),
+                    ticket=_optional_int(getattr(order, "ticket", None)),
+                )
+            )
+        return orders
 
     def modify_position_sltp(
         self, symbol: str, stop_loss: float | None, take_profit: float | None

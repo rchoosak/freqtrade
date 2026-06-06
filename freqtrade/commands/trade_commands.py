@@ -76,6 +76,8 @@ def _load_mt5_config_arg(args: dict[str, Any]):
 
 def start_download_data_mt5(args: dict[str, Any]) -> int:
     """Download historical MT5 bars and cache them as JSON for backtesting/replay."""
+    from datetime import datetime
+
     from freqtrade.loggers import setup_logging_pre
     from freqtrade.mt5_trade.data import LiveMT5DataFeed
     from freqtrade.mt5_trade.gateway import LazyMT5Gateway
@@ -84,11 +86,27 @@ def start_download_data_mt5(args: dict[str, Any]) -> int:
     setup_logging_pre()
     bridge_config, bot_config = _load_mt5_config_arg(args)
 
-    count = int(bridge_config.extra.get("history_bars", 1000))
     out_path = str(bridge_config.extra.get("history_file", "mt5_bars.json"))
     feed = LiveMT5DataFeed(LazyMT5Gateway(bridge_config), timeframe=bot_config.timeframe)
-    MT5HistoryDownloader(feed).download_to_json(bot_config.symbols, count, out_path)
-    logger.info("Saved %d-bar history for %s to %s.", count, list(bot_config.symbols), out_path)
+    downloader = MT5HistoryDownloader(feed)
+
+    date_from = bridge_config.extra.get("history_from")
+    date_to = bridge_config.extra.get("history_to")
+    if date_from and date_to:
+        downloader.download_range_to_json(
+            bot_config.symbols,
+            datetime.fromisoformat(str(date_from)),
+            datetime.fromisoformat(str(date_to)),
+            out_path,
+        )
+        logger.info(
+            "Saved %s..%s history for %s to %s.",
+            date_from, date_to, list(bot_config.symbols), out_path,
+        )
+    else:
+        count = int(bridge_config.extra.get("history_bars", 1000))
+        downloader.download_to_json(bot_config.symbols, count, out_path)
+        logger.info("Saved %d-bar history for %s to %s.", count, list(bot_config.symbols), out_path)
     return 0
 
 

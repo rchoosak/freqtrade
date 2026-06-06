@@ -43,6 +43,7 @@ class FakeMT5:
         self.request = None
         self.shutdown_called = False
         self.positions: list = []
+        self.pending_orders: list = []
 
     def initialize(self, **kwargs):
         return True
@@ -55,6 +56,9 @@ class FakeMT5:
 
     def positions_get(self, *args, **kwargs):
         return list(self.positions)
+
+    def orders_get(self, *args, **kwargs):
+        return list(self.pending_orders)
 
     def last_error(self):
         return (0, "ok")
@@ -479,3 +483,22 @@ def test_gateway_reconnects_and_retries_on_dropped_link() -> None:
     assert result.order_id == "999"
     # initialize() runs once on first connect and again on the reconnect.
     assert fake.reconnects >= 2
+
+
+def test_gateway_open_orders_maps_pending_orders() -> None:
+    fake = FakeMT5()
+    fake.pending_orders = [
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.ORDER_TYPE_BUY_LIMIT, volume_current=0.10,
+                        price_open=1.07, ticket=900),
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.ORDER_TYPE_SELL_STOP, volume_current=0.20,
+                        price_open=1.09, ticket=901),
+    ]
+    gateway = _live_gateway(fake)
+
+    orders = gateway.open_orders()
+
+    assert orders[0].side == "buy"
+    assert orders[0].volume == 0.10
+    assert orders[0].ticket == 900
+    assert orders[1].side == "sell"
+    assert orders[1].ticket == 901

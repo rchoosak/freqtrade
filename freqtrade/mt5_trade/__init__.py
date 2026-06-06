@@ -20,6 +20,7 @@ from freqtrade.mt5_trade.data import (
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
 from freqtrade.mt5_trade.history import MT5HistoryDownloader
 from freqtrade.mt5_trade.models import (
+    BrokerOrder,
     BrokerPosition,
     MT5BotConfig,
     MT5BridgeConfig,
@@ -47,6 +48,7 @@ from freqtrade.mt5_trade.symbols import (
 __all__ = [
     "BacktestResult",
     "BacktestTrade",
+    "BrokerOrder",
     "BrokerPosition",
     "LiveMT5DataFeed",
     "LoggingNotifier",

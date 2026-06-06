@@ -115,6 +115,8 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
   iterations; `0` reconciles only at startup.
 - `history_bars` / `history_file` configure `download-data-mt5`: how many recent bars to fetch
   and where to write the JSON cache (which `backtest-mt5`/`replay_data` then consume).
+- `history_from` / `history_to` (ISO datetimes, optional) make `download-data-mt5` fetch a
+  date range instead of the most-recent `history_bars`.
 
 ## Execution Plan
 
@@ -162,10 +164,21 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
    `MT5OrderResult.is_pending`; the live bot does not record it as a held position and lets
    `reconcile()` adopt it once the broker reports the fill.
 
-**Phase 5 — Remaining live integration (future)**
-- Stale pending-order cancellation/expiry via broker `orders_get` reconciliation.
-- Download/cache from explicit date ranges (currently the most-recent N bars).
-- End-to-end validation on a Windows host against a demo MT5 terminal.
+**Phase 5 — Pending-order lifecycle + dated history (implemented offline)**
+1. Pending-order reconciliation (`LazyMT5Gateway.open_orders` via `orders_get`,
+   `MT5ExecutionBridge.broker_orders`): the bot tracks resting orders in a pending slot, and
+   `reconcile()` adopts broker orders, drops cancelled ones, and moves a filled pending into a
+   position. A resting order occupies the symbol slot, so same-side signals don't stack.
+2. Pending cancellation: an exit/reverse signal on a resting order cancels it
+   (`MT5ExecutionBridge.cancel_order`) instead of sending a market close.
+3. Dated history download: `LazyMT5Gateway.copy_rates_range` /
+   `LiveMT5DataFeed.bars_range` / `MT5HistoryDownloader.download_range`; `download-data-mt5`
+   uses `history_from`/`history_to` when set, else the most-recent `history_bars`.
+
+**Phase 6 — Remaining live integration (future)**
+- Pending-order expiry policies and richer order metadata.
+- End-to-end validation on a Windows host against a demo MT5 terminal (the only path that
+  cannot be exercised off-Windows).
 
 ## Operational Constraints
 

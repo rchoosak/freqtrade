@@ -53,6 +53,9 @@ class MT5ForexBot:
             symbol: (pos.side, pos.volume)  # type: ignore[misc]
             for symbol, pos in store.open_positions().items()
         }
+        # symbol -> (side, volume, ticket) for resting pending orders the bot placed.
+        # In-memory only; rebuilt from the broker via reconcile() (no broker in dry-run).
+        self._pendings: dict[str, tuple[OrderSide, float, int | None]] = {}
 
     @property
     def running(self) -> bool:
@@ -116,32 +119,49 @@ class MT5ForexBot:
 
     def reconcile(self) -> None:
         """
-        Align in-memory + stored positions with the broker's reality (broker is authoritative).
+        Align in-memory + stored positions and pending orders with the broker's reality
+        (broker is authoritative).
 
-        No-op in dry-run (no broker). Adopts broker positions the bot didn't know about and drops
-        ones that were closed externally, so the bot never trades on a stale picture.
+        No-op in dry-run (no broker). Adopts broker positions/orders the bot didn't know about
+        and drops ones that were closed or cancelled externally, so the bot never trades on a
+        stale picture. A pending order that filled moves from the pending slot to a position.
         """
         positions = self._bridge.broker_positions()
-        if positions is None:
+        orders = self._bridge.broker_orders()
+        if positions is None and orders is None:
             return
 
-        broker = {pos.symbol: (pos.side, pos.volume) for pos in positions}
         changes: list[str] = []
+        self._reconcile_positions(positions or [], changes)
+        self._reconcile_pendings(orders or [], changes)
 
+        if changes:
+            self._notify("Reconciled: " + ", ".join(changes))
+
+    def _reconcile_positions(self, positions: list, changes: list[str]) -> None:
+        broker = {pos.symbol: (pos.side, pos.volume) for pos in positions}
         for symbol, state in broker.items():
             if self._positions.get(symbol) != state:
                 self._positions[symbol] = state
                 self._store.open_position(symbol, state[0], state[1], None)
                 changes.append(f"{symbol}->{state[0]} {state[1]}")
-
         for symbol in list(self._positions):
             if symbol not in broker:
                 self._positions.pop(symbol, None)
                 self._store.close_position(symbol)
                 changes.append(f"{symbol}->flat")
 
-        if changes:
-            self._notify("Reconciled positions: " + ", ".join(changes))
+    def _reconcile_pendings(self, orders: list, changes: list[str]) -> None:
+        broker = {o.symbol: (o.side, o.volume, o.ticket) for o in orders}
+        for symbol, state in broker.items():
+            # A filled order is a position now (handled above); don't double-occupy the slot.
+            if symbol not in self._positions and self._pendings.get(symbol) != state:
+                self._pendings[symbol] = state
+                changes.append(f"{symbol} pending {state[0]}")
+        for symbol in list(self._pendings):
+            if symbol not in broker or symbol in self._positions:
+                self._pendings.pop(symbol, None)
+                changes.append(f"{symbol} pending cleared")
 
     def _safe_reconcile(self) -> None:
         try:
@@ -150,8 +170,17 @@ class MT5ForexBot:
             logger.exception("Reconciliation failed.")
             self._notify(f"Reconciliation error: {exc}")
 
+    def _current_slot(self, symbol: str) -> tuple[OrderSide, float] | None:
+        """The side/volume occupying a symbol, whether a filled position or a resting order."""
+        if symbol in self._positions:
+            return self._positions[symbol]
+        if symbol in self._pendings:
+            side, volume, _ticket = self._pendings[symbol]
+            return (side, volume)
+        return None
+
     def _handle_signal(self, symbol: str, signal: Signal, reference_price: float) -> None:
-        current = self._positions.get(symbol)
+        current = self._current_slot(symbol)
         for intent in plan_transitions(current, signal, self._default_volume):
             self._execute(symbol, intent, signal, reference_price)
 
@@ -159,6 +188,13 @@ class MT5ForexBot:
         self, symbol: str, intent: OrderIntent, signal: Signal, reference_price: float
     ) -> None:
         is_open = intent.result is not None
+
+        # Closing a symbol whose slot is a resting order means cancelling that order, not
+        # sending a market close for a position the bot does not hold.
+        if not is_open and symbol in self._pendings:
+            self._cancel_pending(symbol)
+            return
+
         order = self._build_order(symbol, intent, signal, is_open)
         result = self._bridge.submit_order(order)
         self._store.record_order(order, result)
@@ -171,8 +207,10 @@ class MT5ForexBot:
             return
 
         if is_open and result.is_pending:
-            # A resting limit/stop order is not a position yet; reconcile() adopts it once the
-            # broker reports the fill. Avoid recording a position the bot doesn't actually hold.
+            # A resting limit/stop order is not a position yet; reconcile() adopts the fill later.
+            oid = result.order_id
+            ticket = int(oid) if oid is not None and oid.isdigit() else None
+            self._pendings[symbol] = (intent.side, intent.volume, ticket)
             self._notify(f"pending {intent.side} {symbol} {intent.volume} ({result.order_id})")
             return
 
@@ -190,6 +228,20 @@ class MT5ForexBot:
         self._notify(
             f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"
         )
+
+    def _cancel_pending(self, symbol: str) -> None:
+        side, _volume, ticket = self._pendings[symbol]
+        if ticket is None:
+            # Nothing to cancel at the broker; just forget the local slot.
+            self._pendings.pop(symbol, None)
+            return
+        result = self._bridge.cancel_order(ticket)
+        if result.accepted:
+            self._pendings.pop(symbol, None)
+            self._notify(f"cancelled pending {side} {symbol} ({ticket})")
+        else:
+            logger.warning("Cancel pending %s (%s) rejected: %s", symbol, ticket, result.message)
+            self._notify(f"cancel pending {symbol} rejected: {result.message}")
 
     def _apply_sltp(self, symbol: str, signal: Signal) -> None:
         if signal.stop_loss is None and signal.take_profit is None:

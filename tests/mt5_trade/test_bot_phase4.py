@@ -22,7 +22,13 @@ class FakeBridge:
         self.sltp.append((symbol, stop_loss, take_profit))
         return MT5OrderResult(accepted=True, order_id=None)
 
+    def cancel_order(self, ticket):
+        return MT5OrderResult(accepted=True, order_id=str(ticket))
+
     def broker_positions(self):
+        return None
+
+    def broker_orders(self):
         return None
 
     def close(self):
