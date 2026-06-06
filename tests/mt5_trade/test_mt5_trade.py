@@ -34,16 +34,27 @@ class FakeMT5:
     SYMBOL_FILLING_IOC = 2
     TRADE_RETCODE_DONE = 10009
     TRADE_RETCODE_PLACED = 10008
+    TRADE_ACTION_SLTP = 6
+    TRADE_ACTION_REMOVE = 8
+    POSITION_TYPE_BUY = 0
+    POSITION_TYPE_SELL = 1
 
     def __init__(self) -> None:
         self.request = None
         self.shutdown_called = False
+        self.positions: list = []
 
     def initialize(self, **kwargs):
         return True
 
     def login(self, *args, **kwargs):
         return True
+
+    def terminal_info(self):
+        return SimpleNamespace(connected=True)
+
+    def positions_get(self, *args, **kwargs):
+        return list(self.positions)
 
     def last_error(self):
         return (0, "ok")
@@ -364,3 +375,107 @@ def test_bridge_config_repr_hides_credentials() -> None:
     rendered = repr(config)
     assert "super-secret" not in rendered
     assert "123456" not in rendered
+
+
+# --- Phase 3: reconciliation, SL/TP, cancel, reconnect ---
+
+
+def _live_gateway(fake: FakeMT5) -> LazyMT5Gateway:
+    config = MT5BridgeConfig(
+        symbols=(MT5SymbolMapping(base="EUR", quote="USD", mt5_symbol="EURUSD"),),
+        dry_run=False,
+    )
+    return LazyMT5Gateway(config, mt5_module=fake)
+
+
+def test_gateway_open_positions_maps_side_and_fields() -> None:
+    fake = FakeMT5()
+    fake.positions = [
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.POSITION_TYPE_SELL, volume=0.20,
+                        price_open=1.085, ticket=555),
+    ]
+    gateway = _live_gateway(fake)
+
+    positions = gateway.open_positions()
+
+    assert len(positions) == 1
+    assert positions[0].side == "sell"
+    assert positions[0].volume == 0.20
+    assert positions[0].ticket == 555
+
+
+def test_gateway_modify_position_sltp_sends_sltp_action() -> None:
+    fake = FakeMT5()
+    fake.positions = [
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.POSITION_TYPE_BUY, volume=0.10,
+                        price_open=1.08, ticket=42),
+    ]
+    gateway = _live_gateway(fake)
+
+    result = gateway.modify_position_sltp("EURUSD", stop_loss=1.07, take_profit=1.10)
+
+    assert result.accepted is True
+    assert fake.request["action"] == FakeMT5.TRADE_ACTION_SLTP
+    assert fake.request["position"] == 42
+    assert fake.request["sl"] == 1.07
+    assert fake.request["tp"] == 1.10
+
+
+def test_gateway_modify_sltp_without_position_is_rejected() -> None:
+    gateway = _live_gateway(FakeMT5())
+
+    result = gateway.modify_position_sltp("EURUSD", stop_loss=1.07, take_profit=None)
+
+    assert result.accepted is False
+    assert "No open MT5 position" in result.message
+
+
+def test_gateway_cancel_order_sends_remove_action() -> None:
+    fake = FakeMT5()
+    gateway = _live_gateway(fake)
+
+    result = gateway.cancel_order(777)
+
+    assert result.accepted is True
+    assert fake.request["action"] == FakeMT5.TRADE_ACTION_REMOVE
+    assert fake.request["order"] == 777
+
+
+class DropThenRecoverMT5(FakeMT5):
+    """terminal_info reports a dropped link until reconnected; order_send returns None once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._healthy = True
+        self._order_calls = 0
+        self.reconnects = 0
+
+    def terminal_info(self):
+        return SimpleNamespace(connected=True) if self._healthy else None
+
+    def initialize(self, **kwargs):
+        # A reconnect makes the terminal healthy again.
+        self._healthy = True
+        self.reconnects += 1
+        return True
+
+    def order_send(self, request):
+        self._order_calls += 1
+        if self._order_calls == 1:
+            # Simulate the link dropping on the first attempt.
+            self._healthy = False
+            return None
+        self.request = request
+        return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE, order=999, comment="ok")
+
+
+def test_gateway_reconnects_and_retries_on_dropped_link() -> None:
+    fake = DropThenRecoverMT5()
+    gateway = _live_gateway(fake)
+
+    result = gateway.order_send(MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.01))
+
+    assert result.accepted is True
+    assert result.order_id == "999"
+    # initialize() runs once on first connect and again on the reconnect.
+    assert fake.reconnects >= 2

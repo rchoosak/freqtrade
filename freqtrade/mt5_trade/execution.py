@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from freqtrade.mt5_trade.gateway import LazyMT5Gateway
 from freqtrade.mt5_trade.models import (
+    BrokerPosition,
     MT5BridgeConfig,
     MT5OrderRequest,
     MT5OrderResult,
@@ -31,6 +32,37 @@ class MT5ExecutionBridge:
                 message="Dry-run order accepted locally; no MT5 order was sent.",
             )
         return self._gateway.order_send(order)
+
+    def modify_sltp(
+        self, symbol: str, stop_loss: float | None, take_profit: float | None
+    ) -> MT5OrderResult:
+        if self._config.dry_run:
+            return MT5OrderResult(
+                accepted=True,
+                order_id=None,
+                message="Dry-run SL/TP modify accepted locally; no MT5 request was sent.",
+            )
+        return self._gateway.modify_position_sltp(symbol, stop_loss, take_profit)
+
+    def cancel_order(self, ticket: int) -> MT5OrderResult:
+        if self._config.dry_run:
+            return MT5OrderResult(
+                accepted=True,
+                order_id=str(ticket),
+                message="Dry-run cancel accepted locally; no MT5 request was sent.",
+            )
+        return self._gateway.cancel_order(ticket)
+
+    def broker_positions(self) -> list[BrokerPosition] | None:
+        """
+        Open positions from the broker, or None in dry-run (no broker to reconcile against).
+
+        None is meaningfully different from an empty list: empty means the broker is flat,
+        None means reconciliation does not apply.
+        """
+        if self._config.dry_run:
+            return None
+        return self._gateway.open_positions()
 
     def close(self) -> None:
         self._gateway.shutdown()

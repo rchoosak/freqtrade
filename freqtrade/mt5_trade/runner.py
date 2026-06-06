@@ -9,6 +9,7 @@ from freqtrade.mt5_trade.data import LiveMT5DataFeed, MT5DataFeed, ReplayDataFee
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
 from freqtrade.mt5_trade.gateway import LazyMT5Gateway
 from freqtrade.mt5_trade.models import MT5BotConfig, MT5BridgeConfig
+from freqtrade.mt5_trade.notifier import Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.strategy import MT5Strategy, SmaCrossStrategy
 
@@ -32,12 +33,14 @@ class MT5TradeRuntime:
         strategy: MT5Strategy | None = None,
         feed: MT5DataFeed | None = None,
         store: MT5TradeStore | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self._bridge_config = bridge_config
         self._bot_config = bot_config
         self._strategy = strategy
         self._feed = feed
         self._store = store
+        self._notifier = notifier
 
     def validate_environment(self) -> None:
         # The MetaTrader5 package (Windows-only) is required only for live trading; dry-run with
@@ -64,6 +67,7 @@ class MT5TradeRuntime:
             store=store,
             bot_config=self._bot_config,
             default_volume=self._bridge_config.default_lot_size,
+            notifier=self._notifier,
         )
 
     def start(self) -> None:

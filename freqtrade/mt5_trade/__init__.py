@@ -6,6 +6,7 @@ the main Freqtrade project remains importable on platforms where that runtime de
 unavailable (it is Windows-only).
 """
 
+from freqtrade.mt5_trade.backtest import BacktestResult, BacktestTrade, run_backtest
 from freqtrade.mt5_trade.bot import MT5ForexBot
 from freqtrade.mt5_trade.config import load_mt5_config, parse_mt5_config
 from freqtrade.mt5_trade.data import (
@@ -16,13 +17,21 @@ from freqtrade.mt5_trade.data import (
 )
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
 from freqtrade.mt5_trade.models import (
+    BrokerPosition,
     MT5BotConfig,
     MT5BridgeConfig,
     MT5OrderRequest,
     MT5OrderResult,
     MT5SymbolMapping,
 )
+from freqtrade.mt5_trade.notifier import (
+    LoggingNotifier,
+    Notifier,
+    NullNotifier,
+    RPCNotifier,
+)
 from freqtrade.mt5_trade.persistence import MT5TradeStore
+from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
 from freqtrade.mt5_trade.runner import MT5TradeRuntime
 from freqtrade.mt5_trade.strategy import MT5Strategy, Signal, SmaCrossStrategy
 from freqtrade.mt5_trade.symbols import (
@@ -33,7 +42,11 @@ from freqtrade.mt5_trade.symbols import (
 
 
 __all__ = [
+    "BacktestResult",
+    "BacktestTrade",
+    "BrokerPosition",
     "LiveMT5DataFeed",
+    "LoggingNotifier",
     "MT5Bar",
     "MT5BotConfig",
     "MT5BridgeConfig",
@@ -46,6 +59,10 @@ __all__ = [
     "MT5SymbolMapping",
     "MT5TradeRuntime",
     "MT5TradeStore",
+    "Notifier",
+    "NullNotifier",
+    "OrderIntent",
+    "RPCNotifier",
     "ReplayDataFeed",
     "Signal",
     "SmaCrossStrategy",
@@ -53,5 +70,7 @@ __all__ = [
     "load_mt5_config",
     "normalize_forex_symbol",
     "parse_mt5_config",
+    "plan_transitions",
+    "run_backtest",
     "to_instrument_id",
 ]

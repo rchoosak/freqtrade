@@ -6,17 +6,14 @@ from collections.abc import Callable
 
 from freqtrade.mt5_trade.data import MT5DataFeed
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
-from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderRequest
+from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderRequest, OrderSide
+from freqtrade.mt5_trade.notifier import LoggingNotifier, Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
+from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
 from freqtrade.mt5_trade.strategy import MT5Strategy, Signal
 
 
 logger = logging.getLogger(__name__)
-
-# Action -> the market order side that opens that position.
-_ENTRY_SIDE = {"enter_long": "buy", "enter_short": "sell"}
-# A position side -> the opposite market order side that closes it.
-_CLOSE_SIDE = {"buy": "sell", "sell": "buy"}
 
 
 class MT5ForexBot:
@@ -26,6 +23,8 @@ class MT5ForexBot:
 
     The loop is fully driven by injected collaborators so it runs and is tested offline with a
     ReplayDataFeed + dry-run bridge; live trading swaps in LiveMT5DataFeed + a connected gateway.
+    Position keys are the symbols the bot trades (mt5 symbols by default), matching the broker's
+    reported position symbols for reconciliation.
     """
 
     def __init__(
@@ -36,6 +35,8 @@ class MT5ForexBot:
         store: MT5TradeStore,
         bot_config: MT5BotConfig,
         default_volume: float = 0.01,
+        notifier: Notifier | None = None,
+        max_consecutive_errors: int = 5,
     ) -> None:
         self._bridge = bridge
         self._feed = feed
@@ -43,11 +44,13 @@ class MT5ForexBot:
         self._store = store
         self._config = bot_config
         self._default_volume = default_volume
+        self._notifier = notifier or LoggingNotifier()
+        self._max_consecutive_errors = max_consecutive_errors
         self._running = False
         self._order_seq = 0
-        # symbol -> (order side that is open, volume). Restored from the store on startup.
-        self._positions: dict[str, tuple[str, float]] = {
-            symbol: (pos.side, pos.volume)
+        # symbol -> (open order side, volume). Restored from the store on startup.
+        self._positions: dict[str, tuple[OrderSide, float]] = {
+            symbol: (pos.side, pos.volume)  # type: ignore[misc]
             for symbol, pos in store.open_positions().items()
         }
 
@@ -68,13 +71,35 @@ class MT5ForexBot:
         """
         Run the loop until the feed is exhausted (replay) or interrupted (live).
 
-        ``sleep`` is injectable so tests don't actually wait.
+        Reconciles broker state at startup and (optionally) on an interval, isolates per-
+        iteration failures so a transient error does not crash the bot, and stops after too many
+        consecutive errors. ``sleep`` is injectable so tests don't actually wait.
         """
         self._running = True
-        logger.info("MT5 forex bot started (symbols=%s).", list(self._config.symbols))
+        self._notify(f"MT5 forex bot started (symbols={list(self._config.symbols)}).")
+        self.reconcile()
+        iteration = 0
+        consecutive_errors = 0
         try:
             while self._running:
-                self.run_once()
+                iteration += 1
+                try:
+                    self.run_once()
+                    consecutive_errors = 0
+                except Exception as exc:  # keep the loop alive across transient failures
+                    consecutive_errors += 1
+                    logger.exception("MT5 bot iteration failed (%d in a row).", consecutive_errors)
+                    self._notify(f"Iteration error: {exc}")
+                    if consecutive_errors >= self._max_consecutive_errors:
+                        self._notify("Too many consecutive errors; stopping bot.")
+                        break
+
+                if (
+                    self._config.reconcile_interval > 0
+                    and iteration % self._config.reconcile_interval == 0
+                ):
+                    self._safe_reconcile()
+
                 if not self._feed.advance():
                     logger.info("Data feed exhausted; stopping bot.")
                     break
@@ -89,62 +114,98 @@ class MT5ForexBot:
         self._bridge.close()
         self._feed.close()
 
+    def reconcile(self) -> None:
+        """
+        Align in-memory + stored positions with the broker's reality (broker is authoritative).
+
+        No-op in dry-run (no broker). Adopts broker positions the bot didn't know about and drops
+        ones that were closed externally, so the bot never trades on a stale picture.
+        """
+        positions = self._bridge.broker_positions()
+        if positions is None:
+            return
+
+        broker = {pos.symbol: (pos.side, pos.volume) for pos in positions}
+        changes: list[str] = []
+
+        for symbol, state in broker.items():
+            if self._positions.get(symbol) != state:
+                self._positions[symbol] = state
+                self._store.open_position(symbol, state[0], state[1], None)
+                changes.append(f"{symbol}->{state[0]} {state[1]}")
+
+        for symbol in list(self._positions):
+            if symbol not in broker:
+                self._positions.pop(symbol, None)
+                self._store.close_position(symbol)
+                changes.append(f"{symbol}->flat")
+
+        if changes:
+            self._notify("Reconciled positions: " + ", ".join(changes))
+
+    def _safe_reconcile(self) -> None:
+        try:
+            self.reconcile()
+        except Exception as exc:
+            logger.exception("Reconciliation failed.")
+            self._notify(f"Reconciliation error: {exc}")
+
     def _handle_signal(self, symbol: str, signal: Signal, reference_price: float) -> None:
-        if signal.action == "hold":
-            return
-
         current = self._positions.get(symbol)
+        for intent in plan_transitions(current, signal, self._default_volume):
+            self._execute(symbol, intent, signal, reference_price)
 
-        if signal.action == "exit":
-            if current is not None:
-                self._close(symbol, current, signal)
-            return
-
-        desired_side = _ENTRY_SIDE[signal.action]
-        if current is not None and current[0] == desired_side:
-            # Already in the desired direction; do not stack another position.
-            return
-        if current is not None:
-            # Reverse: close the opposing position before opening the new one.
-            self._close(symbol, current, signal)
-
-        self._open(symbol, desired_side, signal, reference_price)
-
-    def _open(self, symbol: str, side: str, signal: Signal, reference_price: float) -> None:
-        volume = signal.volume if signal.volume is not None else self._default_volume
-        order = self._build_order(symbol, side, volume, signal)
+    def _execute(
+        self, symbol: str, intent: OrderIntent, signal: Signal, reference_price: float
+    ) -> None:
+        is_open = intent.result is not None
+        order = self._build_order(symbol, intent, signal, is_open)
         result = self._bridge.submit_order(order)
         self._store.record_order(order, result)
-        if result.accepted:
-            self._positions[symbol] = (side, volume)
-            self._store.open_position(symbol, side, volume, reference_price)
-            logger.info("Opened %s %s %.2f (%s).", side, symbol, volume, result.order_id)
+
+        if not result.accepted:
+            logger.warning(
+                "%s %s %s rejected: %s", intent.reason, intent.side, symbol, result.message
+            )
+            self._notify(f"{intent.reason} {intent.side} {symbol} rejected: {result.message}")
+            return
+
+        if is_open:
+            self._positions[symbol] = intent.result  # type: ignore[assignment]
+            self._store.open_position(symbol, intent.side, intent.volume, reference_price)
+            self._apply_sltp(symbol, signal)
         else:
-            logger.warning("Open %s %s rejected: %s", side, symbol, result.message)
-
-    def _close(self, symbol: str, position: tuple[str, float], signal: Signal) -> None:
-        open_side, volume = position
-        close_side = _CLOSE_SIDE[open_side]
-        order = self._build_order(symbol, close_side, volume, signal)
-        result = self._bridge.submit_order(order)
-        self._store.record_order(order, result)
-        if result.accepted:
             self._positions.pop(symbol, None)
             self._store.close_position(symbol)
-            logger.info("Closed %s %s %.2f (%s).", open_side, symbol, volume, result.order_id)
-        else:
-            logger.warning("Close %s %s rejected: %s", open_side, symbol, result.message)
+
+        self._notify(
+            f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"
+        )
+
+    def _apply_sltp(self, symbol: str, signal: Signal) -> None:
+        if signal.stop_loss is None and signal.take_profit is None:
+            return
+        result = self._bridge.modify_sltp(symbol, signal.stop_loss, signal.take_profit)
+        if not result.accepted:
+            logger.warning("SL/TP modify for %s rejected: %s", symbol, result.message)
+            self._notify(f"SL/TP {symbol} rejected: {result.message}")
 
     def _build_order(
-        self, symbol: str, side: str, volume: float, signal: Signal
+        self, symbol: str, intent: OrderIntent, signal: Signal, is_open: bool
     ) -> MT5OrderRequest:
         self._order_seq += 1
         return MT5OrderRequest(
             symbol=symbol,
-            side=side,  # type: ignore[arg-type]  # validated by MT5OrderRequest
-            volume=volume,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
+            side=intent.side,
+            volume=intent.volume,
+            # SL/TP travel on the broker-side modify, not the entry order, so the same code
+            # path works for market entries and later adjustments.
             client_order_id=f"{symbol}-{self._order_seq}",
             comment=signal.comment,
         )
+
+    def _notify(self, message: str) -> None:
+        try:
+            self._notifier.send(message)
+        except Exception:
+            logger.exception("Notifier failed for message: %s", message)

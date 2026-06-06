@@ -124,6 +124,7 @@ class MT5BotConfig:
     poll_interval: float = 5.0
     warmup_bars: int = 200
     db_path: str = "mt5_trade.sqlite"
+    reconcile_interval: int = 0
     symbols: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -131,6 +132,10 @@ class MT5BotConfig:
             raise ValueError(f"Invalid poll_interval {self.poll_interval!r}. Expected > 0.")
         if self.warmup_bars <= 0:
             raise ValueError(f"Invalid warmup_bars {self.warmup_bars!r}. Expected > 0.")
+        if self.reconcile_interval < 0:
+            raise ValueError(
+                f"Invalid reconcile_interval {self.reconcile_interval!r}. Expected >= 0."
+            )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MT5BotConfig:
@@ -139,6 +144,7 @@ class MT5BotConfig:
             poll_interval=float(data.get("poll_interval", 5.0)),
             warmup_bars=int(data.get("warmup_bars", 200)),
             db_path=str(data.get("db_path", "mt5_trade.sqlite")),
+            reconcile_interval=int(data.get("reconcile_interval", 0)),
             symbols=tuple(str(s) for s in data.get("symbols", ())),
         )
 
@@ -164,6 +170,17 @@ class MT5OrderRequest:
         _validate_literal("time_in_force", self.time_in_force, get_args(TimeInForce))
         if self.volume <= 0:
             raise ValueError(f"Invalid volume {self.volume!r}. Expected a positive lot size.")
+
+
+@dataclass(frozen=True)
+class BrokerPosition:
+    """An open position as reported by the broker terminal."""
+
+    symbol: str
+    side: OrderSide
+    volume: float
+    price: float | None = None
+    ticket: int | None = None
 
 
 @dataclass(frozen=True)

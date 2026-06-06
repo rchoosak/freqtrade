@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+import logging
 from types import ModuleType
 from typing import Any
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.models import (
+    BrokerPosition,
     MT5BridgeConfig,
     MT5OrderRequest,
     MT5OrderResult,
     normalize_lot_size,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+def _optional_float(value: Any) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
 
 
 class LazyMT5Gateway:
@@ -70,17 +83,56 @@ class LazyMT5Gateway:
             self._mt5.shutdown()
         self._connected = False
 
+    def is_healthy(self) -> bool:
+        """Cheap liveness probe: a connected terminal returns terminal info."""
+        if not self._connected:
+            return False
+        try:
+            return self.mt5.terminal_info() is not None
+        except Exception:
+            return False
+
+    def ensure_connected(self) -> None:
+        """
+        Connect if needed, and transparently reconnect if the terminal dropped.
+
+        Live terminals can restart or lose their link mid-session; this re-establishes the
+        connection so the next call works instead of failing on a stale handle.
+        """
+        if not self._connected:
+            self.connect()
+            return
+        if not self.is_healthy():
+            logger.warning("MT5 terminal connection lost; reconnecting.")
+            try:
+                self.shutdown()
+            except Exception:
+                self._connected = False
+            self.connect()
+
     def order_send(self, order: MT5OrderRequest) -> MT5OrderResult:
-        self.connect()
         request = self.build_order_send_request(order)
-        response = self.mt5.order_send(request)
-        if response is None:
+        return self._dispatch(request, description=f"order_send {order.symbol} {order.side}")
+
+    def _dispatch(self, request: dict[str, Any], *, description: str) -> MT5OrderResult:
+        """Send a trade request with one transparent reconnect+retry on a dropped link."""
+        for attempt in (1, 2):
+            self.ensure_connected()
+            response = self.mt5.order_send(request)
+            if response is not None:
+                return self._parse_result(response)
+            # None usually means the request never reached a live terminal.
+            if attempt == 1 and not self.is_healthy():
+                logger.warning("MT5 %s returned None; retrying after reconnect.", description)
+                continue
             return MT5OrderResult(
                 accepted=False,
                 order_id=None,
-                message=f"MT5 order_send returned None: {self.mt5.last_error()}",
+                message=f"MT5 {description} returned None: {self.mt5.last_error()}",
             )
+        raise AssertionError("unreachable")  # pragma: no cover
 
+    def _parse_result(self, response: Any) -> MT5OrderResult:
         retcode = getattr(response, "retcode", None)
         done_code = getattr(self.mt5, "TRADE_RETCODE_DONE", None)
         placed_code = getattr(self.mt5, "TRADE_RETCODE_PLACED", None)
@@ -97,6 +149,63 @@ class LazyMT5Gateway:
             message=comment,
             raw=response,
         )
+
+    def open_positions(self) -> list[BrokerPosition]:
+        """Return the broker's currently open positions (used for reconciliation)."""
+        self.ensure_connected()
+        raw = self.mt5.positions_get()
+        if not raw:
+            return []
+        buy_type = getattr(self.mt5, "POSITION_TYPE_BUY", 0)
+        positions: list[BrokerPosition] = []
+        for pos in raw:
+            side: Any = "buy" if getattr(pos, "type", buy_type) == buy_type else "sell"
+            positions.append(
+                BrokerPosition(
+                    symbol=str(getattr(pos, "symbol", "")),
+                    side=side,
+                    volume=float(getattr(pos, "volume", 0.0)),
+                    price=_optional_float(getattr(pos, "price_open", None)),
+                    ticket=_optional_int(getattr(pos, "ticket", None)),
+                )
+            )
+        return positions
+
+    def modify_position_sltp(
+        self, symbol: str, stop_loss: float | None, take_profit: float | None
+    ) -> MT5OrderResult:
+        """Set/clear the broker-side stop-loss and take-profit on an open position."""
+        mapping = self._config.mapping_for(symbol)
+        self.ensure_connected()
+        position = self._find_position(mapping.mt5_symbol)
+        if position is None:
+            return MT5OrderResult(
+                accepted=False,
+                order_id=None,
+                message=f"No open MT5 position for {mapping.mt5_symbol} to modify.",
+            )
+        request: dict[str, Any] = {
+            "action": getattr(self.mt5, "TRADE_ACTION_SLTP", 6),
+            "symbol": mapping.mt5_symbol,
+            "position": position.ticket,
+            "sl": round(stop_loss, mapping.price_precision) if stop_loss is not None else 0.0,
+            "tp": round(take_profit, mapping.price_precision) if take_profit is not None else 0.0,
+        }
+        return self._dispatch(request, description=f"modify_sltp {mapping.mt5_symbol}")
+
+    def cancel_order(self, ticket: int) -> MT5OrderResult:
+        """Cancel a pending order by its ticket id."""
+        request: dict[str, Any] = {
+            "action": getattr(self.mt5, "TRADE_ACTION_REMOVE", 8),
+            "order": ticket,
+        }
+        return self._dispatch(request, description=f"cancel_order {ticket}")
+
+    def _find_position(self, mt5_symbol: str) -> BrokerPosition | None:
+        for position in self.open_positions():
+            if position.symbol == mt5_symbol:
+                return position
+        return None
 
     def build_order_send_request(self, order: MT5OrderRequest) -> dict[str, Any]:
         mapping = self._config.mapping_for(order.symbol)
