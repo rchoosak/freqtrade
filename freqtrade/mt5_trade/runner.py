@@ -17,6 +17,12 @@ from freqtrade.mt5_trade.strategy import MT5Strategy, SmaCrossStrategy
 logger = logging.getLogger(__name__)
 
 
+def build_default_strategy(extra: dict) -> MT5Strategy:
+    """Build the bot's strategy from the config's optional ``strategy`` parameters."""
+    params = extra.get("strategy", {})
+    return SmaCrossStrategy(fast=int(params.get("fast", 10)), slow=int(params.get("slow", 30)))
+
+
 class MT5TradeRuntime:
     """
     Assembles and runs the MT5 forex bot from typed config.
@@ -75,11 +81,7 @@ class MT5TradeRuntime:
         bot.run()
 
     def _build_strategy(self) -> MT5Strategy:
-        params = self._bridge_config.extra.get("strategy", {})
-        return SmaCrossStrategy(
-            fast=int(params.get("fast", 10)),
-            slow=int(params.get("slow", 30)),
-        )
+        return build_default_strategy(self._bridge_config.extra)
 
     def _build_feed(self, gateway: LazyMT5Gateway) -> MT5DataFeed:
         replay_path = self._bridge_config.extra.get("replay_data")

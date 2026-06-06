@@ -55,18 +55,26 @@ flowchart LR
 - `persistence.py` — `MT5TradeStore`, a lightweight stdlib-`sqlite3` store for orders/positions
   (independent of the CCXT-coupled SQLAlchemy `Trade`/`Order` models).
 - `notifier.py` — `Notifier` sinks (`NullNotifier`, `LoggingNotifier`, `RPCNotifier`).
-- `backtest.py` — `run_backtest()`: offline strategy replay with simulated fills and P&L stats.
+- `backtest.py` — `run_backtest()`: offline strategy replay with simulated fills (market +
+  limit/stop) and P&L stats.
+- `history.py` — `MT5HistoryDownloader`: fetch + cache historical bars as JSON.
 - `runner.py` — `MT5TradeRuntime` assembles the bot from config and runs it.
 
 ### Running
 
 ```bash
+# Live/dry-run trading loop
 freqtrade trade-mt5 --config mt5-config.json
+# Download + cache historical bars (live; writes history_file)
+freqtrade download-data-mt5 --config mt5-config.json
+# Backtest the configured strategy over a cached bar file (offline)
+freqtrade backtest-mt5 --config mt5-config.json
 ```
 
 The `trade-mt5` command loads the standalone `mt5_trade` config directly (not through the
 crypto-bot config validation) and starts the bot. In dry-run with a `replay_data` file it runs
-fully offline; for live trading it connects to a running MT5 terminal.
+fully offline; for live trading it connects to a running MT5 terminal. `backtest-mt5` reads the
+`replay_data` (or `history_file`) bar cache and runs entirely offline.
 
 ## Configuration Shape
 
@@ -88,6 +96,8 @@ fully offline; for live trading it connects to a running MT5 terminal.
     "db_path": "mt5_trade.sqlite",
     "strategy": {"fast": 10, "slow": 30},
     "replay_data": "user_data/mt5_bars.json",
+    "history_bars": 1000,
+    "history_file": "user_data/mt5_bars.json",
     "trade_symbols": ["EURUSD"],
     "symbols": [
       {"venue": "MT5", "base": "EUR", "quote": "USD", "mt5_symbol": "EURUSD"},
@@ -103,6 +113,8 @@ fully offline; for live trading it connects to a running MT5 terminal.
 - `strategy` parameters are passed to the default `SmaCrossStrategy`.
 - `reconcile_interval` (optional, live only) reconciles with broker positions every N
   iterations; `0` reconciles only at startup.
+- `history_bars` / `history_file` configure `download-data-mt5`: how many recent bars to fetch
+  and where to write the JSON cache (which `backtest-mt5`/`replay_data` then consume).
 
 ## Execution Plan
 
@@ -136,9 +148,23 @@ fully offline; for live trading it connects to a running MT5 terminal.
    reusing `plan_transitions` so position semantics match live; reports round-trip P&L, trade
    count, and win rate.
 
-**Phase 4 — Remaining live integration (future)**
-- Download/cache historical MT5 bars for backtesting input.
-- Pending-order lifecycle management (limit/stop entries) and partial-fill handling.
+**Phase 4 — Data, backtesting, and order types (implemented offline)**
+1. Historical data download + cache (`MT5HistoryDownloader`, `download-data-mt5` CLI;
+   `load_bars_json` / `dump_bars_json`) into the replay JSON format.
+2. Backtesting CLI (`backtest-mt5`) over a cached bar file, printing trades, total P&L, and win
+   rate via `run_backtest`.
+3. Limit/stop entry orders: `Signal.order_kind` + `price` flow through `plan_transitions` to the
+   order request. The backtester rests limit/stop orders until a bar's range touches the price
+   (and cancels them if the strategy reverses/exits first).
+4. Partial-fill handling: `MT5OrderResult.filled_volume` is parsed from the broker response and
+   the bot tracks the executed (not requested) volume.
+5. Pending placement awareness: a placed (not filled) pending order is recognized via
+   `MT5OrderResult.is_pending`; the live bot does not record it as a held position and lets
+   `reconcile()` adopt it once the broker reports the fill.
+
+**Phase 5 — Remaining live integration (future)**
+- Stale pending-order cancellation/expiry via broker `orders_get` reconciliation.
+- Download/cache from explicit date ranges (currently the most-recent N bars).
 - End-to-end validation on a Windows host against a demo MT5 terminal.
 
 ## Operational Constraints

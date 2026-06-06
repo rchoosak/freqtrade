@@ -60,34 +60,8 @@ class ReplayDataFeed(MT5DataFeed):
 
     @classmethod
     def from_json(cls, path: str, *, warmup: int = 1) -> ReplayDataFeed:
-        """
-        Build a replay feed from a JSON file mapping symbol -> list of bars.
-
-        Each bar is ``[time, open, high, low, close, volume]`` (volume optional). Intended for
-        offline dry-run runs and the CLI smoke test where no MT5 terminal is available.
-        """
-        import json
-        from pathlib import Path
-
-        raw = json.loads(Path(path).read_text())
-        if not isinstance(raw, dict):
-            raise OperationalException(
-                f"Replay data file {path!r} must map symbol -> list of bars."
-            )
-        data: dict[str, list[MT5Bar]] = {}
-        for symbol, rows in raw.items():
-            data[symbol] = [
-                MT5Bar(
-                    time=int(row[0]),
-                    open=float(row[1]),
-                    high=float(row[2]),
-                    low=float(row[3]),
-                    close=float(row[4]),
-                    volume=float(row[5]) if len(row) > 5 else 0.0,
-                )
-                for row in rows
-            ]
-        return cls(data, warmup=warmup)
+        """Build a replay feed from a JSON bar file (see ``load_bars_json`` for the format)."""
+        return cls(load_bars_json(path), warmup=warmup)
 
     def latest_bars(self, symbol: str, count: int) -> list[MT5Bar]:
         if symbol not in self._data:
@@ -169,3 +143,44 @@ class LiveMT5DataFeed(MT5DataFeed):
 
     def close(self) -> None:
         self._gateway.shutdown()
+
+
+def load_bars_json(path: str) -> dict[str, list[MT5Bar]]:
+    """
+    Load bars from a JSON file mapping ``symbol -> [[time, open, high, low, close, volume], ...]``.
+
+    Volume is optional per row. Shared by the replay feed and the backtester so dry-run and
+    backtest consume the same on-disk format produced by the history downloader.
+    """
+    import json
+    from pathlib import Path
+
+    raw = json.loads(Path(path).read_text())
+    if not isinstance(raw, dict):
+        raise OperationalException(f"Bar data file {path!r} must map symbol -> list of bars.")
+    return {
+        symbol: [
+            MT5Bar(
+                time=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]) if len(row) > 5 else 0.0,
+            )
+            for row in rows
+        ]
+        for symbol, rows in raw.items()
+    }
+
+
+def dump_bars_json(data: dict[str, list[MT5Bar]], path: str) -> None:
+    """Write bars to the ``load_bars_json`` format (used by the history downloader)."""
+    import json
+    from pathlib import Path
+
+    serializable = {
+        symbol: [[b.time, b.open, b.high, b.low, b.close, b.volume] for b in bars]
+        for symbol, bars in data.items()
+    }
+    Path(path).write_text(json.dumps(serializable))

@@ -138,6 +138,7 @@ class LazyMT5Gateway:
         placed_code = getattr(self.mt5, "TRADE_RETCODE_PLACED", None)
         success_codes = {code for code in (done_code, placed_code) if code is not None}
         accepted = retcode is not None and retcode in success_codes
+        is_pending = accepted and placed_code is not None and retcode == placed_code
         order_attr = getattr(response, "order", None)
         deal_attr = getattr(response, "deal", None)
         order_id = order_attr if order_attr is not None else deal_attr
@@ -147,6 +148,8 @@ class LazyMT5Gateway:
             order_id=str(order_id) if order_id is not None else None,
             retcode=retcode,
             message=comment,
+            filled_volume=_optional_float(getattr(response, "volume", None)),
+            is_pending=is_pending,
             raw=response,
         )
 

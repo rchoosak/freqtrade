@@ -170,9 +170,18 @@ class MT5ForexBot:
             self._notify(f"{intent.reason} {intent.side} {symbol} rejected: {result.message}")
             return
 
+        if is_open and result.is_pending:
+            # A resting limit/stop order is not a position yet; reconcile() adopts it once the
+            # broker reports the fill. Avoid recording a position the bot doesn't actually hold.
+            self._notify(f"pending {intent.side} {symbol} {intent.volume} ({result.order_id})")
+            return
+
         if is_open:
-            self._positions[symbol] = intent.result  # type: ignore[assignment]
-            self._store.open_position(symbol, intent.side, intent.volume, reference_price)
+            # A partial fill means the broker executed less than requested; track what we got.
+            filled = result.filled_volume
+            volume = filled if filled is not None and filled > 0 else intent.volume
+            self._positions[symbol] = (intent.side, volume)
+            self._store.open_position(symbol, intent.side, volume, reference_price)
             self._apply_sltp(symbol, signal)
         else:
             self._positions.pop(symbol, None)
@@ -198,6 +207,8 @@ class MT5ForexBot:
             symbol=symbol,
             side=intent.side,
             volume=intent.volume,
+            order_kind=intent.order_kind,
+            price=intent.price,
             # SL/TP travel on the broker-side modify, not the entry order, so the same code
             # path works for market entries and later adjustments.
             client_order_id=f"{symbol}-{self._order_seq}",

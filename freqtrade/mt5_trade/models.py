@@ -189,6 +189,10 @@ class MT5OrderResult:
     order_id: str | None
     retcode: int | None = None
     message: str | None = None
+    # Executed volume, which can be less than requested on a partial fill (None if unknown).
+    filled_volume: float | None = None
+    # True when the broker accepted a resting pending order (placed, not yet filled).
+    is_pending: bool = False
     raw: Any = None
 
 

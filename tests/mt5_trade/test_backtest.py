@@ -57,6 +57,45 @@ def test_backtest_marks_open_position_out_at_end() -> None:
     assert result.trades[0].pnl == 4
 
 
+def test_backtest_limit_entry_fills_when_price_is_touched() -> None:
+    # Buy-limit at 8 rests until a bar dips to it (bar index 2), then exits at the next close.
+    strategy = ScriptedStrategy(
+        [Signal("enter_long", order_kind="limit", price=8), HOLD, HOLD, Signal("exit")]
+    )
+    result = run_backtest(
+        strategy, {"EURUSD": _bars([10, 9, 8, 7])}, default_volume=1.0, warmup_bars=10
+    )
+
+    assert result.num_trades == 1
+    assert result.trades[0].entry_price == 8
+    assert result.trades[0].exit_price == 7
+    assert result.trades[0].pnl == -1
+
+
+def test_backtest_limit_entry_cancelled_before_fill() -> None:
+    # The strategy exits before price ever reaches the resting limit -> no trade.
+    strategy = ScriptedStrategy(
+        [Signal("enter_long", order_kind="limit", price=8), Signal("exit")]
+    )
+    result = run_backtest(
+        strategy, {"EURUSD": _bars([10, 9])}, default_volume=1.0, warmup_bars=10
+    )
+
+    assert result.num_trades == 0
+
+
+def test_backtest_buy_stop_fills_on_breakout() -> None:
+    # Buy-stop at 12 fills when a bar trades up through it (bar index 2).
+    strategy = ScriptedStrategy([Signal("enter_long", order_kind="stop", price=12)])
+    result = run_backtest(
+        strategy, {"EURUSD": _bars([10, 11, 13])}, default_volume=1.0, warmup_bars=10
+    )
+
+    assert result.num_trades == 1
+    assert result.trades[0].entry_price == 12
+    assert result.trades[0].pnl == 1
+
+
 def test_backtest_runs_with_real_sma_strategy() -> None:
     closes = [10] * 5 + [11, 13, 15, 17] + [15, 12, 9, 7]
     result = run_backtest(

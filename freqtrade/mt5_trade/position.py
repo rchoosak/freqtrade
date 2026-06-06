@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from freqtrade.mt5_trade.models import OrderSide
+from freqtrade.mt5_trade.models import OrderKind, OrderSide
 from freqtrade.mt5_trade.strategy import Signal
 
 
@@ -21,6 +21,8 @@ class OrderIntent:
     # Resulting position after the order fills: ("buy"|"sell", volume) or None when flat.
     result: tuple[OrderSide, float] | None
     reason: str
+    order_kind: OrderKind = "market"
+    price: float | None = None
 
 
 def plan_transitions(
@@ -54,7 +56,14 @@ def plan_transitions(
 
     volume = signal.volume if signal.volume is not None else default_volume
     intents.append(
-        OrderIntent(side=desired, volume=volume, result=(desired, volume), reason="open")
+        OrderIntent(
+            side=desired,
+            volume=volume,
+            result=(desired, volume),
+            reason="open",
+            order_kind=signal.order_kind,
+            price=signal.price,
+        )
     )
     return intents
 

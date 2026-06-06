@@ -14,8 +14,11 @@ from freqtrade.mt5_trade.data import (
     MT5Bar,
     MT5DataFeed,
     ReplayDataFeed,
+    dump_bars_json,
+    load_bars_json,
 )
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
+from freqtrade.mt5_trade.history import MT5HistoryDownloader
 from freqtrade.mt5_trade.models import (
     BrokerPosition,
     MT5BotConfig,
@@ -53,6 +56,7 @@ __all__ = [
     "MT5DataFeed",
     "MT5ExecutionBridge",
     "MT5ForexBot",
+    "MT5HistoryDownloader",
     "MT5OrderRequest",
     "MT5OrderResult",
     "MT5Strategy",
@@ -66,7 +70,9 @@ __all__ = [
     "ReplayDataFeed",
     "Signal",
     "SmaCrossStrategy",
+    "dump_bars_json",
     "instrument_id_to_mt5_symbol",
+    "load_bars_json",
     "load_mt5_config",
     "normalize_forex_symbol",
     "parse_mt5_config",

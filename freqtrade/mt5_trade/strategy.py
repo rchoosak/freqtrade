@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from freqtrade.mt5_trade.data import MT5Bar
+from freqtrade.mt5_trade.models import OrderKind
 
 
 SignalAction = Literal["enter_long", "enter_short", "exit", "hold"]
@@ -14,9 +15,17 @@ SignalAction = Literal["enter_long", "enter_short", "exit", "hold"]
 class Signal:
     action: SignalAction = "hold"
     volume: float | None = None
+    # Entry order type. A limit/stop entry requires an explicit price and rests as a pending
+    # order until the market reaches it; market entries fill immediately.
+    order_kind: OrderKind = "market"
+    price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
     comment: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.order_kind != "market" and self.price is None:
+            raise ValueError(f"{self.order_kind} entry signal requires an explicit price.")
 
 
 # Shared singleton for "do nothing" to avoid allocating on every bar.

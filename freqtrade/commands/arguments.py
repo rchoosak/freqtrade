@@ -384,6 +384,7 @@ class Arguments:
 
         from freqtrade.commands import (
             start_analysis_entries_exits,
+            start_backtest_mt5,
             start_backtesting,
             start_backtesting_show,
             start_convert_data,
@@ -391,6 +392,7 @@ class Arguments:
             start_convert_trades,
             start_create_userdir,
             start_download_data,
+            start_download_data_mt5,
             start_edge,
             start_hyperopt,
             start_hyperopt_list,
@@ -439,6 +441,22 @@ class Arguments:
             parents=[_common_parser],
         )
         trade_mt5_cmd.set_defaults(func=start_trading_mt5)
+
+        # Add download-data-mt5 subcommand (cache historical MT5 bars for backtesting)
+        download_mt5_cmd = subparsers.add_parser(
+            "download-data-mt5",
+            help="Download and cache historical MT5 bars.",
+            parents=[_common_parser],
+        )
+        download_mt5_cmd.set_defaults(func=start_download_data_mt5)
+
+        # Add backtest-mt5 subcommand (backtest the MT5 strategy over a cached bar file)
+        backtest_mt5_cmd = subparsers.add_parser(
+            "backtest-mt5",
+            help="Backtest the MT5 forex strategy over cached bars.",
+            parents=[_common_parser],
+        )
+        backtest_mt5_cmd.set_defaults(func=start_backtest_mt5)
 
         # add create-userdir subcommand
         create_userdir_cmd = subparsers.add_parser(

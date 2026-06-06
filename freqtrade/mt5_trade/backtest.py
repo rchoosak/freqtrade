@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from freqtrade.mt5_trade.data import MT5Bar
-from freqtrade.mt5_trade.models import OrderSide
+from freqtrade.mt5_trade.models import OrderKind, OrderSide
 from freqtrade.mt5_trade.position import plan_transitions
 from freqtrade.mt5_trade.strategy import MT5Strategy
 
@@ -49,10 +49,29 @@ class _OpenState:
     entry_time: int
 
 
+@dataclass
+class _Pending:
+    side: OrderSide
+    volume: float
+    price: float
+    kind: OrderKind
+
+
 def _pnl(state: _OpenState, exit_price: float) -> float:
     # Profit in price units * volume; long gains when price rises, short when it falls.
     direction = 1.0 if state.side == "buy" else -1.0
     return (exit_price - state.entry_price) * direction * state.volume
+
+
+def _is_filled(pending: _Pending, bar: MT5Bar) -> bool:
+    """Whether a resting limit/stop order is touched by this bar's range."""
+    if pending.kind == "limit":
+        # Buy limit rests below the market and fills on a dip; sell limit above, on a rally.
+        return bar.low <= pending.price if pending.side == "buy" else bar.high >= pending.price
+    if pending.kind == "stop":
+        # Buy stop fills on a breakout up; sell stop on a breakdown.
+        return bar.high >= pending.price if pending.side == "buy" else bar.low <= pending.price
+    return True
 
 
 def run_backtest(
@@ -67,35 +86,53 @@ def run_backtest(
     Replay ``strategy`` over historical bars and report realized round-trip P&L.
 
     Reuses ``plan_transitions`` so backtest position semantics match the live bot exactly:
-    one position per symbol, no stacking, entries/reversals/exits handled identically. Fills are
-    simulated at each bar's close. Any position still open at the end is marked out at the final
-    close when ``close_at_end`` is set.
+    one position per symbol, no stacking, entries/reversals/exits handled identically. Market
+    entries fill at the bar close; limit/stop entries rest until a later bar's range touches the
+    price (and are cancelled if the strategy reverses/exits first). Any position still open at the
+    end is marked out at the final close when ``close_at_end`` is set.
     """
     result = BacktestResult()
 
     for symbol, bars in data.items():
-        open_state: _OpenState | None = None
+        position: _OpenState | None = None
+        pending: _Pending | None = None
 
         for index, bar in enumerate(bars):
+            # 1. A resting order fills first if this bar's range reaches its price.
+            if pending is not None and _is_filled(pending, bar):
+                position = _OpenState(pending.side, pending.volume, pending.price, bar.time)
+                pending = None
+
             window = bars[: index + 1][-warmup_bars:]
             signal = strategy.on_bar(symbol, window)
-            current = (open_state.side, open_state.volume) if open_state else None
+            if position is not None:
+                current = (position.side, position.volume)
+            elif pending is not None:
+                current = (pending.side, pending.volume)
+            else:
+                current = None
 
             for intent in plan_transitions(current, signal, default_volume):
                 if intent.result is None:
-                    # A close always follows an open in plan_transitions.
-                    if open_state is not None:
+                    if position is not None:
                         result.trades.append(
-                            _close_trade(symbol, open_state, bar.close, bar.time)
+                            _close_trade(symbol, position, bar.close, bar.time)
                         )
-                        open_state = None
+                        position = None
+                    else:
+                        # Cancel a resting order the strategy no longer wants.
+                        pending = None
+                elif intent.order_kind == "market":
+                    position = _OpenState(intent.side, intent.volume, bar.close, bar.time)
+                    pending = None
                 else:
-                    open_state = _OpenState(intent.side, intent.volume, bar.close, bar.time)
+                    pending = _Pending(
+                        intent.side, intent.volume, intent.price or 0.0, intent.order_kind
+                    )
+                    position = None
 
-        if close_at_end and open_state is not None and bars:
-            result.trades.append(
-                _close_trade(symbol, open_state, bars[-1].close, bars[-1].time)
-            )
+        if close_at_end and position is not None and bars:
+            result.trades.append(_close_trade(symbol, position, bars[-1].close, bars[-1].time))
 
     return result
 
