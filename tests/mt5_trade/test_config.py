@@ -53,6 +53,42 @@ def test_parse_mt5_config_reads_pending_expiry() -> None:
     assert bot.pending_expiry == 12
 
 
+def test_parse_mt5_config_accepts_csv_data_source() -> None:
+    section = _valid_section()
+    section["data_source"] = {
+        "type": "csv",
+        "path": "EURUSD.csv",
+        "symbol": "EURUSD",
+        "volume_column": None,
+    }
+
+    bridge, _ = parse_mt5_config(section)
+
+    assert bridge.extra["data_source"]["type"] == "csv"
+
+
+def test_parse_mt5_config_accepts_dukascopy_data_source() -> None:
+    section = _valid_section()
+    section["data_source"] = {
+        "type": "dukascopy",
+        "from": "2024-01-01T00:00:00Z",
+        "to": "2024-01-02T00:00:00Z",
+        "price": "mid",
+    }
+
+    bridge, _ = parse_mt5_config(section)
+
+    assert bridge.extra["data_source"]["type"] == "dukascopy"
+
+
+def test_parse_mt5_config_rejects_unknown_data_source() -> None:
+    section = _valid_section()
+    section["data_source"] = {"type": "websocket"}
+
+    with pytest.raises(OperationalException, match="data_source"):
+        parse_mt5_config(section)
+
+
 def test_parse_mt5_config_rejects_negative_pending_expiry() -> None:
     section = _valid_section()
     section["pending_expiry"] = -1

@@ -99,6 +99,7 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
     "replay_data": "user_data/mt5_bars.json",
     "history_bars": 1000,
     "history_file": "user_data/mt5_bars.json",
+    "data_source": {"type": "mt5"},
     "trade_symbols": ["EURUSD"],
     "symbols": [
       {"venue": "MT5", "base": "EUR", "quote": "USD", "mt5_symbol": "EURUSD"},
@@ -118,8 +119,49 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
   and where to write the JSON cache (which `backtest-mt5`/`replay_data` then consume).
 - `history_from` / `history_to` (ISO datetimes, optional) make `download-data-mt5` fetch a
   date range instead of the most-recent `history_bars`.
+- `data_source` selects where `download-data-mt5` gets bars from. `{"type": "mt5"}` keeps the
+  original Windows/terminal path. `{"type": "csv", ...}` and `{"type": "json", ...}` run fully
+  offline on macOS/Linux. `{"type": "dukascopy", ...}` downloads public Dukascopy hourly tick
+  `.bi5` files and aggregates them to the configured timeframe. All sources write the same
+  `history_file` replay cache used by `backtest-mt5`.
 - `pending_expiry` (optional, live only) cancels a resting pending order after it has lived this
   many iterations; `0` disables bot-side expiry.
+
+CSV source example for offline Mac backtests:
+
+```json
+{
+  "data_source": {
+    "type": "csv",
+    "paths": {"EURUSD": "user_data/source/EURUSD_M5.csv"},
+    "time_column": "time",
+    "open_column": "open",
+    "high_column": "high",
+    "low_column": "low",
+    "close_column": "close",
+    "volume_column": "volume",
+    "timezone": "UTC"
+  }
+}
+```
+
+Dukascopy source example:
+
+```json
+{
+  "data_source": {
+    "type": "dukascopy",
+    "from": "2024-01-01T00:00:00Z",
+    "to": "2024-01-02T00:00:00Z",
+    "timeframe": "M5",
+    "price": "bid",
+    "instruments": {"EURUSD": "EURUSD"}
+  }
+}
+```
+
+`price` can be `bid`, `ask`, or `mid`. Dukascopy data is independent from your MT5 broker, so
+symbol suffixes and spreads may not match a live broker exactly.
 
 ## Execution Plan
 

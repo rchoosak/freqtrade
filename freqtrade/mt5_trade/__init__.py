@@ -17,6 +17,15 @@ from freqtrade.mt5_trade.data import (
     dump_bars_json,
     load_bars_json,
 )
+from freqtrade.mt5_trade.data_sources import (
+    CsvDataSource,
+    DukascopyDataSource,
+    DukascopyTick,
+    JsonDataSource,
+    MT5HistoricalDataSource,
+    MT5TerminalDataSource,
+    build_historical_data_source,
+)
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
 from freqtrade.mt5_trade.history import MT5HistoryDownloader
 from freqtrade.mt5_trade.models import (
@@ -50,6 +59,10 @@ __all__ = [
     "BacktestTrade",
     "BrokerOrder",
     "BrokerPosition",
+    "CsvDataSource",
+    "DukascopyDataSource",
+    "DukascopyTick",
+    "JsonDataSource",
     "LiveMT5DataFeed",
     "LoggingNotifier",
     "MT5Bar",
@@ -59,10 +72,12 @@ __all__ = [
     "MT5ExecutionBridge",
     "MT5ForexBot",
     "MT5HistoryDownloader",
+    "MT5HistoricalDataSource",
     "MT5OrderRequest",
     "MT5OrderResult",
     "MT5Strategy",
     "MT5SymbolMapping",
+    "MT5TerminalDataSource",
     "MT5TradeRuntime",
     "MT5TradeStore",
     "Notifier",
@@ -72,6 +87,7 @@ __all__ = [
     "ReplayDataFeed",
     "Signal",
     "SmaCrossStrategy",
+    "build_historical_data_source",
     "dump_bars_json",
     "instrument_id_to_mt5_symbol",
     "load_bars_json",

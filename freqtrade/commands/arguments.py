@@ -442,10 +442,10 @@ class Arguments:
         )
         trade_mt5_cmd.set_defaults(func=start_trading_mt5)
 
-        # Add download-data-mt5 subcommand (cache historical MT5 bars for backtesting)
+        # Add download-data-mt5 subcommand (cache MT5-compatible historical bars for backtesting)
         download_mt5_cmd = subparsers.add_parser(
             "download-data-mt5",
-            help="Download and cache historical MT5 bars.",
+            help="Download/import and cache MT5-compatible historical bars.",
             parents=[_common_parser],
         )
         download_mt5_cmd.set_defaults(func=start_download_data_mt5)
