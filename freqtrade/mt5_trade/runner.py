@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import logging
+import sys
 from importlib.util import find_spec
+from pathlib import Path
+from typing import Any
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.bot import MT5ForexBot
@@ -19,14 +23,79 @@ logger = logging.getLogger(__name__)
 
 
 def build_default_strategy(extra: dict) -> MT5Strategy:
-    """Build the bot's strategy from the config's optional ``strategy`` parameters."""
-    params = extra.get("strategy", {})
+    """
+    Build the bot's strategy from the config's optional ``strategy`` section.
+
+    With a ``class`` dotted path ("module.ClassName"), a custom ``MT5Strategy`` is imported and
+    constructed with the remaining ``strategy`` keys as keyword arguments. An optional ``path``
+    (a directory, or a ``.py`` file whose directory is used) is prepended to ``sys.path`` so
+    user modules outside the package are importable. Without ``class`` the built-in
+    ``SmaCrossStrategy`` is used.
+    """
+    raw = extra.get("strategy", {})
+    if not isinstance(raw, dict):
+        raise OperationalException("mt5_trade.strategy must be an object.")
+    params = dict(raw)
+
+    class_path = params.pop("class", None)
+    search_path = params.pop("path", None)
+    if class_path:
+        return _load_custom_strategy(str(class_path), search_path, params)
+
     return SmaCrossStrategy(
         fast=int(params.get("fast", 10)),
         slow=int(params.get("slow", 30)),
         stop_loss_distance=_optional_float(params.get("stop_loss_distance")),
         take_profit_distance=_optional_float(params.get("take_profit_distance")),
     )
+
+
+def _load_custom_strategy(
+    class_path: str, search_path: Any, params: dict[str, Any]
+) -> MT5Strategy:
+    if search_path:
+        _prepend_sys_path(str(search_path))
+    strategy_cls = _load_strategy_class(class_path)
+    # Constructor kwargs are the remaining strategy keys (class/path already removed).
+    try:
+        return strategy_cls(**params)
+    except TypeError as exc:
+        raise OperationalException(
+            f"Failed to construct strategy {class_path!r} with {sorted(params)}: {exc}"
+        ) from exc
+
+
+def _prepend_sys_path(path_str: str) -> None:
+    target = Path(path_str).expanduser()
+    directory = target.parent if target.suffix == ".py" else target
+    resolved = str(directory.resolve())
+    if resolved not in sys.path:
+        sys.path.insert(0, resolved)
+
+
+def _load_strategy_class(class_path: str) -> type[MT5Strategy]:
+    module_name, _, class_name = class_path.rpartition(".")
+    if not module_name or not class_name:
+        raise OperationalException(
+            f"strategy.class {class_path!r} must be a dotted path like 'module.ClassName'."
+        )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise OperationalException(
+            f"Cannot import strategy module {module_name!r}: {exc}"
+        ) from exc
+
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        raise OperationalException(
+            f"Strategy class {class_name!r} not found in module {module_name!r}."
+        )
+    if not (isinstance(cls, type) and issubclass(cls, MT5Strategy)):
+        raise OperationalException(
+            f"strategy.class {class_path!r} is not an MT5Strategy subclass."
+        )
+    return cls
 
 
 class MT5TradeRuntime:

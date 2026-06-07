@@ -50,6 +50,10 @@ MT5_CONFIG_SCHEMA: dict[str, Any] = {
         "strategy": {
             "type": "object",
             "properties": {
+                # Custom strategy loading: dotted "module.ClassName" + optional importable path.
+                # Remaining keys are passed to the strategy constructor as kwargs.
+                "class": {"type": "string"},
+                "path": {"type": "string"},
                 "fast": {"type": "integer", "minimum": 1},
                 "slow": {"type": "integer", "minimum": 1},
                 "stop_loss_distance": {
