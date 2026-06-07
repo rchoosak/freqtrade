@@ -3,13 +3,15 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import replace
 
 from freqtrade.mt5_trade.data import MT5DataFeed
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
-from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderRequest, OrderSide
+from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderRequest, MT5SymbolMapping, OrderSide
 from freqtrade.mt5_trade.notifier import LoggingNotifier, Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
+from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
 from freqtrade.mt5_trade.strategy import MT5Strategy, Signal
 
 
@@ -35,6 +37,9 @@ class MT5ForexBot:
         store: MT5TradeStore,
         bot_config: MT5BotConfig,
         default_volume: float = 0.01,
+        position_sizer: PositionSizer | None = None,
+        symbol_mappings: dict[str, MT5SymbolMapping] | None = None,
+        account_balance: float | None = None,
         notifier: Notifier | None = None,
         max_consecutive_errors: int = 5,
     ) -> None:
@@ -44,6 +49,9 @@ class MT5ForexBot:
         self._store = store
         self._config = bot_config
         self._default_volume = default_volume
+        self._position_sizer = position_sizer or PositionSizer(fixed_lot_size=default_volume)
+        self._symbol_mappings = symbol_mappings or {}
+        self._account_balance = account_balance
         self._notifier = notifier or LoggingNotifier()
         self._max_consecutive_errors = max_consecutive_errors
         self._running = False
@@ -204,8 +212,40 @@ class MT5ForexBot:
 
     def _handle_signal(self, symbol: str, signal: Signal, reference_price: float) -> None:
         current = self._current_slot(symbol)
-        for intent in plan_transitions(current, signal, self._default_volume):
+        sized_signal = self._size_signal(symbol, signal, current, reference_price)
+        if sized_signal is None:
+            return
+        for intent in plan_transitions(current, sized_signal, self._default_volume):
             self._execute(symbol, intent, signal, reference_price)
+
+    def _size_signal(
+        self,
+        symbol: str,
+        signal: Signal,
+        current: tuple[OrderSide, float] | None,
+        reference_price: float,
+    ) -> Signal | None:
+        side = entry_side_for_action(signal.action)
+        if side is None or signal.volume is not None:
+            return signal
+        if current is not None and current[0] == side:
+            return signal
+
+        entry_price = signal.price if signal.price is not None else reference_price
+        decision = self._position_sizer.size_entry(
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            stop_loss=signal.stop_loss,
+            balance=self._account_balance,
+            mapping=self._symbol_mappings.get(symbol),
+        )
+        if decision.skipped:
+            message = decision.reason or f"{symbol}: position sizing skipped entry."
+            logger.warning(message)
+            self._notify(message)
+            return None
+        return replace(signal, volume=decision.volume)
 
     def _execute(
         self, symbol: str, intent: OrderIntent, signal: Signal, reference_price: float

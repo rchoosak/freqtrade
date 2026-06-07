@@ -155,16 +155,21 @@ class FakeDukascopyDataSource(DukascopyDataSource):
         self.payloads = payloads
         self.requests: list[tuple[str, datetime]] = []
 
-    def _download_hour(self, instrument: str, hour: datetime):
+    def _download_hour(self, instrument: str, hour: datetime, price_scale: float):
         self.requests.append((instrument, hour))
         payload = self.payloads.get(hour)
-        return [] if payload is None else _parse_payload(payload, hour)
+        return [] if payload is None else _parse_payload(payload, hour, price_scale=price_scale)
 
 
-def _parse_payload(payload: bytes, hour: datetime) -> list[DukascopyTick]:
+def _parse_payload(
+    payload: bytes,
+    hour: datetime,
+    *,
+    price_scale: float = 100000,
+) -> list[DukascopyTick]:
     from freqtrade.mt5_trade.data_sources import _parse_dukascopy_bi5
 
-    return _parse_dukascopy_bi5(payload, hour)
+    return _parse_dukascopy_bi5(payload, hour, price_scale=price_scale)
 
 
 def test_dukascopy_source_parses_ticks_and_aggregates_to_timeframe() -> None:
@@ -212,6 +217,26 @@ def test_dukascopy_source_can_aggregate_mid_price() -> None:
     data = source.load(["EURUSD"])
 
     assert data["EURUSD"][0].close == 1.1001
+
+
+def test_dukascopy_source_treats_empty_payload_as_no_ticks() -> None:
+    assert _parse_payload(b"", datetime(2024, 1, 1, tzinfo=UTC)) == []
+
+
+def test_dukascopy_source_applies_configured_price_scale() -> None:
+    hour = datetime(2024, 1, 1, tzinfo=UTC)
+    payload = _bi5_payload([(0, 4627005, 4626005, 1.0, 1.0)])
+    source = FakeDukascopyDataSource(
+        {"type": "dukascopy", "price": "bid", "price_scale": 1000},
+        timeframe="M1",
+        date_from=hour,
+        date_to=datetime(2024, 1, 1, 0, 1, tzinfo=UTC),
+        payloads={hour: payload},
+    )
+
+    data = source.load(["XAUUSD"])
+
+    assert data["XAUUSD"][0].close == 4626.005
 
 
 def test_dukascopy_source_uses_zero_based_month_in_url() -> None:

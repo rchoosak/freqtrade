@@ -11,6 +11,7 @@ from freqtrade.mt5_trade.gateway import LazyMT5Gateway
 from freqtrade.mt5_trade.models import MT5BotConfig, MT5BridgeConfig
 from freqtrade.mt5_trade.notifier import Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
+from freqtrade.mt5_trade.sizing import PositionSizer
 from freqtrade.mt5_trade.strategy import MT5Strategy, SmaCrossStrategy
 
 
@@ -20,7 +21,12 @@ logger = logging.getLogger(__name__)
 def build_default_strategy(extra: dict) -> MT5Strategy:
     """Build the bot's strategy from the config's optional ``strategy`` parameters."""
     params = extra.get("strategy", {})
-    return SmaCrossStrategy(fast=int(params.get("fast", 10)), slow=int(params.get("slow", 30)))
+    return SmaCrossStrategy(
+        fast=int(params.get("fast", 10)),
+        slow=int(params.get("slow", 30)),
+        stop_loss_distance=_optional_float(params.get("stop_loss_distance")),
+        take_profit_distance=_optional_float(params.get("take_profit_distance")),
+    )
 
 
 class MT5TradeRuntime:
@@ -65,6 +71,14 @@ class MT5TradeRuntime:
         store = self._store or MT5TradeStore(self._bot_config.db_path)
         strategy = self._strategy or self._build_strategy()
         feed = self._feed or self._build_feed(gateway)
+        account_balance = _optional_float(self._bridge_config.extra.get("starting_balance"))
+        position_sizer = PositionSizer.from_config(
+            self._bridge_config.extra,
+            default_lot_size=self._bridge_config.default_lot_size,
+            contract_size=float(self._bridge_config.extra.get("contract_size", 1.0)),
+        )
+        if position_sizer.requires_balance and account_balance is None:
+            raise OperationalException("risk_percent position sizing requires starting_balance.")
 
         return MT5ForexBot(
             bridge=bridge,
@@ -73,6 +87,9 @@ class MT5TradeRuntime:
             store=store,
             bot_config=self._bot_config,
             default_volume=self._bridge_config.default_lot_size,
+            position_sizer=position_sizer,
+            symbol_mappings=_symbol_mapping_lookup(self._bridge_config),
+            account_balance=account_balance,
             notifier=self._notifier,
         )
 
@@ -91,3 +108,19 @@ class MT5TradeRuntime:
                 str(replay_path), warmup=self._bot_config.warmup_bars
             )
         return LiveMT5DataFeed(gateway, timeframe=self._bot_config.timeframe)
+
+
+def _optional_float(value) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _symbol_mapping_lookup(config: MT5BridgeConfig):
+    mappings = {}
+    for mapping in config.symbols:
+        pair = f"{mapping.base}{mapping.quote}".upper()
+        mappings[mapping.mt5_symbol] = mapping
+        mappings[mapping.mt5_symbol.upper()] = mapping
+        mappings[mapping.instrument_id] = mapping
+        mappings[mapping.pair] = mapping
+        mappings[pair] = mapping
+    return mappings

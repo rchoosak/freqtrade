@@ -5,6 +5,7 @@ from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderResult
 from freqtrade.mt5_trade.notifier import Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
+from freqtrade.mt5_trade.sizing import PositionSizer
 from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal
 
 
@@ -69,6 +70,33 @@ def test_bot_applies_sltp_on_open() -> None:
 
     assert len(bridge.orders) == 1
     assert bridge.sltp == [("EURUSD", 1.07, 1.12)]
+
+
+def test_bot_uses_risk_percent_position_sizing() -> None:
+    bridge = FakeBridge()
+    store = MT5TradeStore(":memory:")
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=5, poll_interval=1.0)
+    feed = ReplayDataFeed({"EURUSD": [MT5Bar(time=0, open=10, high=10, low=10, close=10)]})
+    strategy = ScriptedStrategy([Signal("enter_long", stop_loss=5.0)])
+    sizer = PositionSizer.from_config(
+        {"position_sizing": {"mode": "risk_percent", "risk_per_trade": 1.0}},
+        default_lot_size=0.05,
+        contract_size=100,
+    )
+    bot = MT5ForexBot(
+        bridge,
+        feed,
+        strategy,
+        store,
+        cfg,
+        default_volume=0.05,
+        position_sizer=sizer,
+        account_balance=1000,
+    )
+
+    bot.run_once()
+
+    assert bridge.orders[0].volume == 0.02
 
 
 def test_bot_does_not_call_sltp_without_levels() -> None:

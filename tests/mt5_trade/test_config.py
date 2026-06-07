@@ -53,6 +53,30 @@ def test_parse_mt5_config_reads_pending_expiry() -> None:
     assert bot.pending_expiry == 12
 
 
+def test_parse_mt5_config_accepts_backtest_account_settings() -> None:
+    section = _valid_section()
+    section["starting_balance"] = 1000
+    section["contract_size"] = 100
+
+    bridge, _ = parse_mt5_config(section)
+
+    assert bridge.extra["starting_balance"] == 1000
+    assert bridge.extra["contract_size"] == 100
+
+
+def test_parse_mt5_config_accepts_position_sizing() -> None:
+    section = _valid_section()
+    section["position_sizing"] = {
+        "mode": "risk_percent",
+        "risk_per_trade": 1.0,
+        "skip_if_min_lot_exceeds_risk": True,
+    }
+
+    bridge, _ = parse_mt5_config(section)
+
+    assert bridge.extra["position_sizing"]["mode"] == "risk_percent"
+
+
 def test_parse_mt5_config_accepts_csv_data_source() -> None:
     section = _valid_section()
     section["data_source"] = {
@@ -89,11 +113,27 @@ def test_parse_mt5_config_rejects_unknown_data_source() -> None:
         parse_mt5_config(section)
 
 
+def test_parse_mt5_config_rejects_unknown_position_sizing_mode() -> None:
+    section = _valid_section()
+    section["position_sizing"] = {"mode": "kelly"}
+
+    with pytest.raises(OperationalException, match="position_sizing"):
+        parse_mt5_config(section)
+
+
 def test_parse_mt5_config_rejects_negative_pending_expiry() -> None:
     section = _valid_section()
     section["pending_expiry"] = -1
 
     with pytest.raises(OperationalException, match="pending_expiry"):
+        parse_mt5_config(section)
+
+
+def test_parse_mt5_config_rejects_zero_starting_balance() -> None:
+    section = _valid_section()
+    section["starting_balance"] = 0
+
+    with pytest.raises(OperationalException, match="starting_balance"):
         parse_mt5_config(section)
 
 

@@ -97,6 +97,7 @@ def start_backtest_mt5(args: dict[str, Any]) -> int:
     from freqtrade.mt5_trade.backtest import run_backtest
     from freqtrade.mt5_trade.data import load_bars_json
     from freqtrade.mt5_trade.runner import build_default_strategy
+    from freqtrade.mt5_trade.sizing import PositionSizer
 
     setup_logging_pre()
     bridge_config, bot_config = _load_mt5_config_arg(args)
@@ -107,27 +108,79 @@ def start_backtest_mt5(args: dict[str, Any]) -> int:
             "backtest-mt5 needs a 'replay_data' (or 'history_file') path in the config."
         )
     data = load_bars_json(str(data_path))
+    starting_balance = bridge_config.extra.get("starting_balance")
+    contract_size = float(bridge_config.extra.get("contract_size", 1.0))
+    position_sizer = PositionSizer.from_config(
+        bridge_config.extra,
+        default_lot_size=bridge_config.default_lot_size,
+        contract_size=contract_size,
+    )
     result = run_backtest(
         build_default_strategy(bridge_config.extra),
         data,
         default_volume=bridge_config.default_lot_size,
         warmup_bars=bot_config.warmup_bars,
+        starting_balance=float(starting_balance) if starting_balance is not None else None,
+        contract_size=contract_size,
+        position_sizer=position_sizer,
+        symbol_mappings=_mt5_symbol_mapping_lookup(bridge_config),
     )
 
-    logger.info(
-        "Backtest: trades=%d total_pnl=%.5f win_rate=%.1f%%",
-        result.num_trades,
-        result.total_pnl,
-        result.win_rate * 100,
-    )
-    for trade in result.trades:
+    if result.starting_balance is not None:
         logger.info(
-            "  %s %s vol=%s entry=%s exit=%s pnl=%.5f",
-            trade.symbol,
-            trade.side,
-            trade.volume,
-            trade.entry_price,
-            trade.exit_price,
-            trade.pnl,
+            (
+                "Backtest: trades=%d raw_pnl=%.5f profit=%.2f starting_balance=%.2f "
+                "ending_balance=%.2f return=%.2f%% win_rate=%.1f%% skipped_entries=%d"
+            ),
+            result.num_trades,
+            result.total_pnl,
+            result.total_profit,
+            result.starting_balance,
+            result.ending_balance,
+            result.return_pct,
+            result.win_rate * 100,
+            result.skipped_entries,
         )
+    else:
+        logger.info(
+            "Backtest: trades=%d total_pnl=%.5f win_rate=%.1f%% skipped_entries=%d",
+            result.num_trades,
+            result.total_pnl,
+            result.win_rate * 100,
+            result.skipped_entries,
+        )
+    for trade in result.trades:
+        if result.contract_size != 1.0:
+            logger.info(
+                "  %s %s vol=%s entry=%s exit=%s raw_pnl=%.5f profit=%.2f",
+                trade.symbol,
+                trade.side,
+                trade.volume,
+                trade.entry_price,
+                trade.exit_price,
+                trade.pnl,
+                trade.pnl * result.contract_size,
+            )
+        else:
+            logger.info(
+                "  %s %s vol=%s entry=%s exit=%s pnl=%.5f",
+                trade.symbol,
+                trade.side,
+                trade.volume,
+                trade.entry_price,
+                trade.exit_price,
+                trade.pnl,
+            )
     return 0
+
+
+def _mt5_symbol_mapping_lookup(bridge_config):
+    mappings = {}
+    for mapping in bridge_config.symbols:
+        pair = f"{mapping.base}{mapping.quote}".upper()
+        mappings[mapping.mt5_symbol] = mapping
+        mappings[mapping.mt5_symbol.upper()] = mapping
+        mappings[mapping.instrument_id] = mapping
+        mappings[mapping.pair] = mapping
+        mappings[pair] = mapping
+    return mappings

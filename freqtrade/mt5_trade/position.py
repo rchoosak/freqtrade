@@ -23,6 +23,8 @@ class OrderIntent:
     reason: str
     order_kind: OrderKind = "market"
     price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
     expiration: int | None = None
 
 
@@ -64,6 +66,8 @@ def plan_transitions(
             reason="open",
             order_kind=signal.order_kind,
             price=signal.price,
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit,
             expiration=signal.expiration,
         )
     )

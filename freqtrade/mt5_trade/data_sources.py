@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import lzma
 import struct
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -173,6 +174,14 @@ class DukascopyDataSource(MT5HistoricalDataSource):
         self._date_from = _ensure_utc(date_from)
         self._date_to = _ensure_utc(date_to)
         self._price = price
+        self._price_scale = float(config.get("price_scale", 100000))
+        self._price_scales = {
+            str(symbol).upper(): float(scale)
+            for symbol, scale in config.get("price_scales", {}).items()
+        }
+        self._timeout = float(config.get("timeout", 60))
+        self._retries = int(config.get("retries", 3))
+        self._retry_sleep = float(config.get("retry_sleep", 2.0))
         self._instruments = {
             str(symbol): str(instrument)
             for symbol, instrument in config.get("instruments", {}).items()
@@ -181,39 +190,65 @@ class DukascopyDataSource(MT5HistoricalDataSource):
     def load(self, symbols: Iterable[str]) -> dict[str, list[MT5Bar]]:
         data: dict[str, list[MT5Bar]] = {}
         for symbol in symbols:
-            ticks = self._load_ticks(self._instrument_for(symbol))
+            instrument = self._instrument_for(symbol)
+            ticks = self._load_ticks(instrument, self._price_scale_for(symbol, instrument))
             data[symbol] = self._aggregate_ticks(ticks)
         return data
 
-    def _load_ticks(self, instrument: str) -> list[DukascopyTick]:
+    def _load_ticks(self, instrument: str, price_scale: float) -> list[DukascopyTick]:
         ticks: list[DukascopyTick] = []
         current = self._floor_hour(self._date_from)
         end_hour = self._floor_hour(self._date_to) + timedelta(hours=1)
 
         while current < end_hour:
-            ticks.extend(self._download_hour(instrument, current))
+            ticks.extend(self._download_hour(instrument, current, price_scale))
             current += timedelta(hours=1)
 
         start_ms = int(self._date_from.timestamp() * 1000)
         end_ms = int(self._date_to.timestamp() * 1000)
         return [tick for tick in ticks if start_ms <= tick.time_ms < end_ms]
 
-    def _download_hour(self, instrument: str, hour: datetime) -> list[DukascopyTick]:
+    def _download_hour(
+        self, instrument: str, hour: datetime, price_scale: float
+    ) -> list[DukascopyTick]:
         url = self._hour_url(instrument, hour)
         scheme = urlparse(url).scheme
         if scheme not in {"http", "https"}:
             raise OperationalException(f"Unsupported Dukascopy URL scheme {scheme!r}.")
-        try:
-            with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
-                compressed = response.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return []
-            raise OperationalException(f"Dukascopy download failed for {url}: {exc}.") from exc
-        except urllib.error.URLError as exc:
-            raise OperationalException(f"Dukascopy download failed for {url}: {exc}.") from exc
+        request = urllib.request.Request(  # noqa: S310
+            url, headers={"User-Agent": "freqtrade-mt5-trade/1.0"}
+        )
+        retryable = {429, 502, 503, 504}
+        for attempt in range(1, self._retries + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
+                    compressed = response.read()
+                return _parse_dukascopy_bi5(compressed, hour, price_scale=price_scale)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    return []
+                if exc.code not in retryable or attempt == self._retries:
+                    raise OperationalException(
+                        f"Dukascopy download failed for {url}: {exc}."
+                    ) from exc
+            except urllib.error.URLError as exc:
+                if attempt == self._retries:
+                    raise OperationalException(
+                        f"Dukascopy download failed for {url}: {exc}."
+                    ) from exc
+            except OSError as exc:
+                if attempt == self._retries:
+                    raise OperationalException(
+                        f"Dukascopy download failed for {url}: {exc}."
+                    ) from exc
+            except OperationalException as exc:
+                if attempt == self._retries:
+                    raise OperationalException(
+                        f"Dukascopy download failed for {url}: {exc}"
+                    ) from exc
+            time.sleep(self._retry_sleep)
 
-        return _parse_dukascopy_bi5(compressed, hour)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _hour_url(self, instrument: str, hour: datetime) -> str:
         # Dukascopy's path uses zero-based months (January = 00).
@@ -230,6 +265,12 @@ class DukascopyDataSource(MT5HistoricalDataSource):
         if root.endswith(".MT5"):
             root = root[:-4]
         return root.replace("/", "").replace("_", "").replace("-", "").split(".", maxsplit=1)[0]
+
+    def _price_scale_for(self, symbol: str, instrument: str) -> float:
+        return self._price_scales.get(
+            symbol.upper(),
+            self._price_scales.get(instrument.upper(), self._price_scale),
+        )
 
     def _aggregate_ticks(self, ticks: list[DukascopyTick]) -> list[MT5Bar]:
         buckets: dict[int, list[float]] = {}
@@ -374,7 +415,15 @@ def _timeframe_seconds(timeframe: str) -> int:
     return mapping[timeframe]
 
 
-def _parse_dukascopy_bi5(compressed: bytes, hour: datetime) -> list[DukascopyTick]:
+def _parse_dukascopy_bi5(
+    compressed: bytes,
+    hour: datetime,
+    *,
+    price_scale: float = 100000,
+) -> list[DukascopyTick]:
+    if not compressed:
+        return []
+
     try:
         raw = lzma.decompress(compressed)
     except lzma.LZMAError as exc:
@@ -393,8 +442,8 @@ def _parse_dukascopy_bi5(compressed: bytes, hour: datetime) -> list[DukascopyTic
         ticks.append(
             DukascopyTick(
                 time_ms=hour_ms + int(time_delta),
-                ask=ask / 100000,
-                bid=bid / 100000,
+                ask=ask / price_scale,
+                bid=bid / price_scale,
                 ask_volume=float(ask_volume),
                 bid_volume=float(bid_volume),
             )

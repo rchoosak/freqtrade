@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from freqtrade.mt5_trade.backtest import run_backtest
 from freqtrade.mt5_trade.data import MT5Bar
+from freqtrade.mt5_trade.models import MT5SymbolMapping
+from freqtrade.mt5_trade.sizing import PositionSizer
 from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal, SmaCrossStrategy
 
 
@@ -31,6 +33,85 @@ def test_backtest_computes_round_trip_pnl() -> None:
     assert trade.exit_price == 3
     assert trade.pnl == 2
     assert result.win_rate == 1.0
+
+
+def test_backtest_reports_profit_and_return_pct() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long"), Signal("exit")])
+    result = run_backtest(
+        strategy,
+        {"XAUUSD": _bars([100, 102])},
+        default_volume=0.01,
+        warmup_bars=10,
+        starting_balance=1000,
+        contract_size=100,
+    )
+
+    assert result.total_pnl == 0.02
+    assert result.total_profit == 2.0
+    assert result.ending_balance == 1002.0
+    assert result.return_pct == 0.2
+
+
+def test_backtest_uses_risk_percent_sizing() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long", stop_loss=90), Signal("exit")])
+    sizer = PositionSizer.from_config(
+        {"position_sizing": {"mode": "risk_percent", "risk_per_trade": 1.0}},
+        default_lot_size=0.99,
+        contract_size=100,
+    )
+    result = run_backtest(
+        strategy,
+        {"XAUUSD": _bars([100, 110])},
+        default_volume=0.99,
+        warmup_bars=10,
+        starting_balance=1000,
+        contract_size=100,
+        position_sizer=sizer,
+        symbol_mappings={
+            "XAUUSD": MT5SymbolMapping(
+                base="XAU", quote="USD", mt5_symbol="XAUUSD", min_lot=0.01, lot_step=0.01
+            )
+        },
+    )
+
+    assert result.trades[0].volume == 0.01
+    assert result.total_profit == 10.0
+    assert result.return_pct == 1.0
+
+
+def test_backtest_skips_risk_entry_when_min_lot_exceeds_risk() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long", stop_loss=80), Signal("exit")])
+    sizer = PositionSizer.from_config(
+        {"position_sizing": {"mode": "risk_percent", "risk_per_trade": 0.5}},
+        default_lot_size=0.01,
+        contract_size=100,
+    )
+
+    result = run_backtest(
+        strategy,
+        {"XAUUSD": _bars([100, 110])},
+        warmup_bars=10,
+        starting_balance=1000,
+        contract_size=100,
+        position_sizer=sizer,
+    )
+
+    assert result.num_trades == 0
+    assert result.skipped_entries == 1
+
+
+def test_backtest_closes_position_at_stop_loss() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long", stop_loss=95), HOLD])
+    result = run_backtest(
+        strategy,
+        {"XAUUSD": [MT5Bar(0, 100, 100, 100, 100), MT5Bar(1, 98, 101, 94, 99)]},
+        default_volume=1.0,
+        warmup_bars=10,
+    )
+
+    assert result.num_trades == 1
+    assert result.trades[0].exit_price == 95
+    assert result.trades[0].pnl == -5
 
 
 def test_backtest_short_trade_profits_when_price_falls() -> None:

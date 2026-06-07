@@ -20,6 +20,8 @@ MT5_CONFIG_SCHEMA: dict[str, Any] = {
         "password": {"type": "string"},
         "server": {"type": "string"},
         "default_lot_size": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+        "starting_balance": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+        "contract_size": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
         "deviation": {"type": "integer", "minimum": 0},
         "magic": {"type": "integer"},
         "comment": {"type": "string"},
@@ -30,6 +32,38 @@ MT5_CONFIG_SCHEMA: dict[str, Any] = {
         "pending_expiry": {"type": "integer", "minimum": 0},
         "db_path": {"type": "string"},
         "trade_symbols": {"type": "array", "items": {"type": "string"}},
+        "position_sizing": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["fixed", "risk_percent"]},
+                "lot_size": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "fixed_lot_size": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "risk_per_trade": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "risk_percent": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "contract_size": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "min_lot": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "lot_step": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "max_lot": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "skip_if_min_lot_exceeds_risk": {"type": "boolean"},
+            },
+        },
+        "strategy": {
+            "type": "object",
+            "properties": {
+                "fast": {"type": "integer", "minimum": 1},
+                "slow": {"type": "integer", "minimum": 1},
+                "stop_loss_distance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": True,
+                },
+                "take_profit_distance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": True,
+                },
+            },
+        },
         "data_source": {
             "type": "object",
             "required": ["type"],
