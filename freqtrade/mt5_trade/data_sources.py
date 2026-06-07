@@ -370,7 +370,9 @@ def _parse_volume(row: dict[str, str], volume_column: Any) -> float:
     if volume_column is None:
         return 0.0
     value = row.get(str(volume_column))
-    return float(value) if value not in (None, "") else 0.0
+    if value is None or value == "":
+        return 0.0
+    return float(value)
 
 
 def _parse_timestamp(value: str, timezone_name: str) -> int:

@@ -48,11 +48,11 @@ class PositionSizer:
         if mode not in {"fixed", "risk_percent"}:
             raise ValueError("position_sizing.mode must be 'fixed' or 'risk_percent'.")
 
-        fixed_lot_size = float(
-            raw.get("lot_size", raw.get("fixed_lot_size", default_lot_size))
+        fixed_lot_size = _as_float(
+            raw.get("lot_size", raw.get("fixed_lot_size", default_lot_size)), default_lot_size
         )
-        sizing_contract_size = float(raw.get("contract_size", contract_size))
-        risk_per_trade = float(raw.get("risk_per_trade", raw.get("risk_percent", 1.0)))
+        sizing_contract_size = _as_float(raw.get("contract_size", contract_size), contract_size)
+        risk_per_trade = _as_float(raw.get("risk_per_trade", raw.get("risk_percent", 1.0)), 1.0)
 
         sizer = cls(
             mode=mode,  # type: ignore[arg-type]
@@ -175,3 +175,7 @@ def _mapping_lot_step(mapping: MT5SymbolMapping | None) -> float:
 
 def _optional_float(value: Any) -> float | None:
     return float(value) if value is not None else None
+
+
+def _as_float(value: Any, default: float) -> float:
+    return float(value) if value is not None else default
