@@ -47,7 +47,12 @@ from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
 from freqtrade.mt5_trade.runner import MT5TradeRuntime
 from freqtrade.mt5_trade.sizing import PositionSizer, SizingDecision
-from freqtrade.mt5_trade.strategy import MT5Strategy, Signal, SmaCrossStrategy
+from freqtrade.mt5_trade.strategy import (
+    M5TrendM1EntryStrategy,
+    MT5Strategy,
+    Signal,
+    SmaCrossStrategy,
+)
 from freqtrade.mt5_trade.symbols import (
     instrument_id_to_mt5_symbol,
     normalize_forex_symbol,
@@ -84,6 +89,7 @@ __all__ = [
     "Notifier",
     "NullNotifier",
     "OrderIntent",
+    "M5TrendM1EntryStrategy",
     "PositionSizer",
     "RPCNotifier",
     "ReplayDataFeed",
