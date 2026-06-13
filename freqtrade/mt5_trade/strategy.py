@@ -315,7 +315,10 @@ class M5TrendM1EntryStrategy(MT5Strategy):
 
     @property
     def _minimum_m1_bars(self) -> int:
-        stoch_need = self.trend_fast + self.stoch_rsi_length + self.stoch_k_smooth
+        # Stoch RSI chains RSI(trend_rsi_length) -> stoch(stoch_rsi_length) -> K -> D, then needs
+        # two D values to detect a cross. The inner RSI uses trend_rsi_length (see _stoch_rsi),
+        # not trend_fast, so warm-up must count trend_rsi_length.
+        stoch_need = self.trend_rsi_length + self.stoch_rsi_length + self.stoch_k_smooth
         stoch_need += self.stoch_d_smooth + 2
         return max(self._minimum_m5_bars * 5, stoch_need, self.swing_lookback)
 

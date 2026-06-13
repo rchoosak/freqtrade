@@ -278,3 +278,14 @@ def test_signal_rejects_non_positive_volume() -> None:
         Signal(action="enter_long", volume=0)
     with pytest.raises(ValueError, match="Invalid volume"):
         Signal(action="enter_long", volume=-0.5)
+
+
+def test_m5_trend_m1_minimum_bars_counts_rsi_length_not_fast() -> None:
+    strategy = M5TrendM1EntryStrategy(
+        trend_fast=1, trend_slow=3, trend_rsi_length=2, trend_bb_length=3,
+        stoch_rsi_length=20, stoch_k_smooth=1, stoch_d_smooth=1, swing_lookback=5,
+        use_session_filter=False,
+    )
+    # Stoch warm-up = trend_rsi_length(2) + stoch_rsi_length(20) + k(1) + d(1) + 2 = 26, the
+    # binding constraint here. Using trend_fast(1) instead would have under-counted to 25.
+    assert strategy._minimum_m1_bars == 26
