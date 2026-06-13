@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.bot import MT5ForexBot
 from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.models import (
@@ -96,6 +99,18 @@ def _entry_signal() -> Signal:
     return Signal("enter_long", tp1=12.0, tp1_close_fraction=0.5, move_sl_to_breakeven=True)
 
 
+def _store_scale_out_position(
+    store: MT5TradeStore,
+    *,
+    side: str = "buy",
+    volume: float = 1.0,
+    entry_price: float = 10.0,
+    ticket: int | None = None,
+) -> None:
+    store.open_position("EURUSD", side, volume, entry_price, ticket=ticket)
+    store.set_managed_position("EURUSD", side, entry_price, 12.0, 0.5, True, False)
+
+
 def test_bot_scales_out_half_and_moves_stop_to_breakeven() -> None:
     bridge = FakeBridge()
     store = MT5TradeStore(":memory:")
@@ -177,6 +192,28 @@ def test_bot_sltp_uses_reconciled_position_ticket() -> None:
     assert bridge.sltp == [("EURUSD", 9.0, 12.0, 77)]
 
 
+def test_bot_market_entry_with_sltp_stops_when_ticket_missing() -> None:
+    bridge = BrokerPositionBridge([BrokerPosition("EURUSD", "buy", 1.0, price=10.0, ticket=None)])
+    store = MT5TradeStore(":memory:")
+    signal = Signal(
+        "enter_long",
+        stop_loss=9.0,
+        tp1=12.0,
+        tp1_close_fraction=0.5,
+        move_sl_to_breakeven=True,
+    )
+    bot = _bot(bridge, ScriptedStrategy([signal]), store, default_volume=1.0)
+
+    with pytest.raises(OperationalException, match="SL/TP ticket lookup failed"):
+        bot.run_once()
+
+    assert len(bridge.orders) == 1
+    assert bridge.sltp == []
+    assert store.open_positions()["EURUSD"].side == "buy"
+    assert store.managed_positions() == {}
+    assert "EURUSD" not in bot._managed
+
+
 def test_bot_scale_out_skipped_when_position_too_small_to_split() -> None:
     bridge = FakeBridge()
     store = MT5TradeStore(":memory:")
@@ -250,6 +287,37 @@ def test_bot_scale_out_order_carries_position_ticket() -> None:
     assert bridge.orders[1].position_ticket == 42
 
 
+def test_bot_scale_out_recomputes_after_ticket_refresh_changes_volume() -> None:
+    bridge = BrokerPositionBridge([BrokerPosition("EURUSD", "buy", 0.4, price=10.0, ticket=77)])
+    store = MT5TradeStore(":memory:")
+    _store_scale_out_position(store, volume=1.0)
+    bot = _bot(bridge, ScriptedStrategy([HOLD]), store, default_volume=1.0)
+
+    bot._feed.advance()
+    bot.run_once()
+
+    assert len(bridge.orders) == 1
+    assert bridge.orders[0].volume == 0.2
+    assert bridge.orders[0].position_ticket == 77
+    assert store.open_positions()["EURUSD"].volume == 0.2
+
+
+def test_bot_scale_out_aborts_when_ticket_refresh_changes_side() -> None:
+    bridge = BrokerPositionBridge([BrokerPosition("EURUSD", "sell", 0.5, price=10.0, ticket=77)])
+    store = MT5TradeStore(":memory:")
+    _store_scale_out_position(store, side="buy", volume=1.0)
+    bot = _bot(bridge, ScriptedStrategy([HOLD]), store, default_volume=1.0)
+
+    bot._feed.advance()
+    bot.run_once()
+
+    assert bridge.orders == []
+    assert store.managed_positions() == {}
+    position = store.open_positions()["EURUSD"]
+    assert position.side == "sell"
+    assert position.volume == 0.5
+
+
 class PartialFillBridge:
     """Fills the TP1 scale-out close only partially (broker-reported filled_volume)."""
 
@@ -291,8 +359,6 @@ def _scale_mapping():
 
 
 def test_bot_scale_out_tracks_actual_partial_fill() -> None:
-    import pytest
-
     bridge = PartialFillBridge(tp1_filled=0.01)  # requested 0.02, only 0.01 filled
     store = MT5TradeStore(":memory:")
     bot = _bot(

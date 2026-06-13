@@ -39,6 +39,16 @@ class _Managed:
     scaled: bool = False
 
 
+@dataclass(frozen=True)
+class _ScaleOutPlan:
+    managed: _Managed
+    side: OrderSide
+    volume: float
+    close_volume: float
+    remaining: float
+    position_ticket: int | None
+
+
 def _target_crossed(side: OrderSide, level: float, bar: MT5Bar) -> bool:
     # A favorable target: longs hit it on the bar high, shorts on the bar low.
     return bar.high >= level if side == "buy" else bar.low <= level
@@ -293,8 +303,7 @@ class MT5ForexBot:
             ticket_learned = _ticket_learned(self._position_ids.get(symbol), identity)
             if slot_changed or identity_changed or ticket_learned:
                 if identity_changed:
-                    self._managed.pop(symbol, None)
-                    self._store.clear_managed_position(symbol)
+                    self._clear_managed(symbol)
                 self._positions[symbol] = state
                 self._position_ids[symbol] = identity
                 self._store.open_position(symbol, state[0], state[1], pos.price, ticket=pos.ticket)
@@ -303,8 +312,7 @@ class MT5ForexBot:
             if symbol not in broker:
                 self._positions.pop(symbol, None)
                 self._position_ids.pop(symbol, None)
-                self._managed.pop(symbol, None)
-                self._store.clear_managed_position(symbol)
+                self._clear_managed(symbol)
                 self._store.close_position(symbol)
                 # The broker closed this position (e.g. SL/TP); let the strategy reset state.
                 self._strategy.on_position_closed(symbol)
@@ -487,18 +495,13 @@ class MT5ForexBot:
             self._positions[symbol] = (intent.side, volume)
             self._position_ids[symbol] = (entry_price, None)
             self._store.open_position(symbol, intent.side, volume, entry_price, ticket=None)
-            ticket_ok = True
-            position_ticket = None
-            if signal.stop_loss is not None or signal.take_profit is not None:
-                ticket_ok, position_ticket = self._resolve_position_ticket(symbol, "SL/TP")
-            if ticket_ok:
-                entry_price = self._position_ids.get(symbol, (entry_price, None))[0] or entry_price
-                self._apply_sltp(symbol, signal, position_ticket=position_ticket)
+            self._protect_entry_sltp(symbol, signal)
+            entry_price = self._position_ids.get(symbol, (entry_price, None))[0] or entry_price
             self._register_scale_out(symbol, intent, entry_price)
         else:
             self._positions.pop(symbol, None)
             self._position_ids.pop(symbol, None)
-            self._managed.pop(symbol, None)
+            self._clear_managed(symbol)
             self._store.close_position(symbol)
             self._strategy.on_position_closed(symbol)
 
@@ -515,6 +518,29 @@ class MT5ForexBot:
         side, volume = position
         return side == expected_side and _same_volume(volume, intent.volume)
 
+    def _protect_entry_sltp(self, symbol: str, signal: Signal) -> None:
+        if signal.stop_loss is None and signal.take_profit is None:
+            return
+        ticket_ok, position_ticket = self._resolve_position_ticket(symbol, "SL/TP")
+        if not ticket_ok:
+            self._abort_unprotected_entry(
+                symbol,
+                "SL/TP ticket lookup failed after market entry",
+            )
+        if not self._apply_sltp(symbol, signal, position_ticket=position_ticket):
+            self._abort_unprotected_entry(symbol, "SL/TP modify failed after market entry")
+
+    def _abort_unprotected_entry(self, symbol: str, reason: str) -> None:
+        self._clear_managed(symbol)
+        self._running = False
+        message = (
+            f"{reason}: {symbol} position is tracked but the bot is stopping to avoid "
+            "unmanaged live exposure."
+        )
+        logger.error(message)
+        self._notify(message)
+        raise OperationalException(message)
+
     def _resolve_position_ticket(
         self, symbol: str, reason: str
     ) -> tuple[bool, int | None]:
@@ -526,8 +552,8 @@ class MT5ForexBot:
         ticket = self._position_ids.get(symbol, (None, None))[1]
         if broker_available and ticket is None:
             message = (
-                f"{reason} {symbol} rejected: broker position ticket is required to close "
-                "safely on MT5 hedging accounts."
+                f"{reason} {symbol} rejected: broker position ticket is required to manage "
+                "positions safely on MT5 hedging accounts."
             )
             logger.warning(message)
             self._notify(message)
@@ -556,15 +582,17 @@ class MT5ForexBot:
         signal: Signal,
         *,
         position_ticket: int | None = None,
-    ) -> None:
+    ) -> bool:
         if signal.stop_loss is None and signal.take_profit is None:
-            return
+            return True
         result = self._modify_sltp(
             symbol, signal.stop_loss, signal.take_profit, position_ticket=position_ticket
         )
         if not result.accepted:
             logger.warning("SL/TP modify for %s rejected: %s", symbol, result.message)
             self._notify(f"SL/TP {symbol} rejected: {result.message}")
+            return False
+        return True
 
     def _modify_sltp(
         self,
@@ -584,8 +612,7 @@ class MT5ForexBot:
         self, symbol: str, intent: OrderIntent, entry_price: float
     ) -> None:
         if intent.tp1 is None or intent.tp1_close_fraction is None:
-            self._managed.pop(symbol, None)
-            self._store.clear_managed_position(symbol)
+            self._clear_managed(symbol)
             return
         managed = _Managed(
             side=intent.side,
@@ -605,47 +632,23 @@ class MT5ForexBot:
             managed.scaled,
         )
 
+    def _clear_managed(self, symbol: str) -> None:
+        self._managed.pop(symbol, None)
+        self._store.clear_managed_position(symbol)
+
     def _manage_scale_out(self, symbol: str, bar: MT5Bar) -> None:
         """Close the TP1 fraction and move the stop to breakeven once price reaches TP1."""
-        managed = self._managed.get(symbol)
-        if managed is None or managed.scaled:
-            return
-        if not _target_crossed(managed.side, managed.tp1, bar):
+        plan = self._scale_out_plan(symbol, bar)
+        if plan is None:
             return
 
-        position = self._positions.get(symbol)
-        if position is None:
-            self._managed.pop(symbol, None)
-            self._store.clear_managed_position(symbol)
-            return
-
-        side, volume = position
-        mapping = self._symbol_mappings.get(symbol)
-        split = split_lot(
-            volume,
-            managed.close_fraction,
-            min_lot=mapping.min_lot if mapping is not None else 0.0,
-            lot_step=mapping.lot_step if mapping is not None else 0.0,
-        )
-        if split is None:
-            # Cannot divide into two lot-step-aligned legs that both clear min_lot; run whole.
-            managed.scaled = True
-            self._persist_managed(symbol, managed)
-            self._notify(f"scale-out skipped for {symbol}: cannot split into valid lots")
-            return
-        close_volume, remaining = split
-
-        ticket_ok, position_ticket = self._resolve_position_ticket(symbol, "tp1 scale-out")
-        if not ticket_ok:
-            return
-
-        close_side: OrderSide = "sell" if side == "buy" else "buy"
+        close_side: OrderSide = "sell" if plan.side == "buy" else "buy"
         self._order_seq += 1
         order = MT5OrderRequest(
             symbol=symbol,
             side=close_side,
-            volume=close_volume,
-            position_ticket=position_ticket,
+            volume=plan.close_volume,
+            position_ticket=plan.position_ticket,
             client_order_id=f"{symbol}-tp1-{self._order_seq}",
             comment="tp1 scale-out",
         )
@@ -664,34 +667,100 @@ class MT5ForexBot:
             return
         if filled is not None and filled > 0:
             closed = filled
-            remaining = volume - closed
+            remaining = plan.volume - closed
         elif result.requested_volume is not None and result.requested_volume > 0:
             closed = result.requested_volume
-            remaining = volume - closed
+            remaining = plan.volume - closed
         else:
-            closed = close_volume
+            closed = plan.close_volume
+            remaining = plan.remaining
 
-        self._positions[symbol] = (side, remaining)
+        self._positions[symbol] = (plan.side, remaining)
         self._position_ids[symbol] = (
-            managed.entry_price,
+            plan.managed.entry_price,
             self._position_ids.get(symbol, (None, None))[1],
         )
         self._store.open_position(
             symbol,
-            side,
+            plan.side,
             remaining,
-            managed.entry_price,
+            plan.managed.entry_price,
             ticket=self._position_ids[symbol][1],
         )
-        managed.scaled = True
-        self._persist_managed(symbol, managed)
-        if managed.move_be:
+        plan.managed.scaled = True
+        self._persist_managed(symbol, plan.managed)
+        if plan.managed.move_be:
             be = self._modify_sltp(
-                symbol, managed.entry_price, None, position_ticket=position_ticket
+                symbol,
+                plan.managed.entry_price,
+                None,
+                position_ticket=plan.position_ticket,
             )
             if not be.accepted:
                 logger.warning("Breakeven SL move for %s rejected: %s", symbol, be.message)
-        self._notify(f"scaled out {symbol} {closed} @ {managed.tp1}; runner {remaining}")
+        self._notify(f"scaled out {symbol} {closed} @ {plan.managed.tp1}; runner {remaining}")
+
+    def _scale_out_plan(self, symbol: str, bar: MT5Bar) -> _ScaleOutPlan | None:
+        managed = self._managed.get(symbol)
+        if managed is None or managed.scaled:
+            return None
+        if not _target_crossed(managed.side, managed.tp1, bar):
+            return None
+
+        ticket_ok, position_ticket = self._resolve_position_ticket(symbol, "tp1 scale-out")
+        if not ticket_ok:
+            return None
+
+        return self._refreshed_scale_out_plan(symbol, bar, position_ticket)
+
+    def _refreshed_scale_out_plan(
+        self,
+        symbol: str,
+        bar: MT5Bar,
+        position_ticket: int | None,
+    ) -> _ScaleOutPlan | None:
+        managed = self._managed.get(symbol)
+        if managed is None or managed.scaled:
+            return None
+        if not _target_crossed(managed.side, managed.tp1, bar):
+            return None
+
+        position = self._positions.get(symbol)
+        if position is None:
+            self._clear_managed(symbol)
+            return None
+
+        side, volume = position
+        if side != managed.side:
+            self._clear_managed(symbol)
+            self._notify(
+                f"scale-out skipped for {symbol}: broker position side changed "
+                "during ticket refresh"
+            )
+            return None
+
+        mapping = self._symbol_mappings.get(symbol)
+        split = split_lot(
+            volume,
+            managed.close_fraction,
+            min_lot=mapping.min_lot if mapping is not None else 0.0,
+            lot_step=mapping.lot_step if mapping is not None else 0.0,
+        )
+        if split is None:
+            # Cannot divide into two lot-step-aligned legs that both clear min_lot; run whole.
+            managed.scaled = True
+            self._persist_managed(symbol, managed)
+            self._notify(f"scale-out skipped for {symbol}: cannot split into valid lots")
+            return None
+        close_volume, remaining = split
+        return _ScaleOutPlan(
+            managed=managed,
+            side=side,
+            volume=volume,
+            close_volume=close_volume,
+            remaining=remaining,
+            position_ticket=position_ticket,
+        )
 
     def _persist_managed(self, symbol: str, managed: _Managed) -> None:
         self._store.set_managed_position(
