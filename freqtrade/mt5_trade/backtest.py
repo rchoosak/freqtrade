@@ -160,6 +160,12 @@ def run_backtest(
         if pending is not None and _is_filled(pending, bar):
             position = _open_from_pending(pending, bar.time)
             pending = None
+            # The fill is intrabar at the order price; the rest of this bar can still hit SL/TP
+            # (live carries broker-side SL/TP on the filled order). _manage_open_position skips
+            # the fill bar via its entry-bar guard, so resolve it here, conservatively stop-first.
+            position, current_balance = _resolve_exits(
+                strategy, result, symbol, position, bar, current_balance, mapping
+            )
 
         position, current_balance = _manage_open_position(
             strategy, result, symbol, position, bar, current_balance, mapping
@@ -243,9 +249,24 @@ def _manage_open_position(
     current_balance: float | None,
     mapping: MT5SymbolMapping | None,
 ) -> tuple[_OpenState | None, float | None]:
+    # A market entry's own bar is never seen here (it opens later in the loop than this call), so
+    # the entry-bar skip only ever applies to a pending fill — and that case is resolved
+    # separately right after the fill (see run_backtest), where the rest of the bar can still hit
+    # SL/TP, matching the broker-side SL/TP that a live pending order carries.
     if position is None or position.entry_time == bar.time:
         return position, current_balance
+    return _resolve_exits(strategy, result, symbol, position, bar, current_balance, mapping)
 
+
+def _resolve_exits(
+    strategy: MT5Strategy,
+    result: BacktestResult,
+    symbol: str,
+    position: _OpenState,
+    bar: MT5Bar,
+    current_balance: float | None,
+    mapping: MT5SymbolMapping | None,
+) -> tuple[_OpenState | None, float | None]:
     # Conservative ordering: a stop is resolved before any take-profit on the same bar.
     stop = position.stop_loss
     if stop is not None and _stop_crossed(position.side, stop, bar):

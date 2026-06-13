@@ -368,3 +368,16 @@ def test_backtest_normalizes_explicit_off_grid_volume() -> None:
     assert result.num_trades == 1
     # 0.025 floored to the 0.01 lot grid -> 0.02.
     assert result.trades[0].volume == 0.02
+
+
+def test_backtest_pending_fill_resolves_sl_on_same_bar() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long", order_kind="limit", price=8, stop_loss=7)])
+    # bar 1 dips to 6.9: the buy-limit (8) fills, then the stop (7) is hit in the same candle.
+    data = {"EURUSD": [MT5Bar(0, 10, 10, 10, 10), MT5Bar(1, 9, 9, 6.9, 7.5)]}
+
+    result = run_backtest(strategy, data, default_volume=1.0, warmup_bars=10)
+
+    assert result.num_trades == 1
+    assert result.trades[0].entry_price == 8
+    assert result.trades[0].exit_price == 7   # stopped on the fill bar (not the bar close 7.5)
+    assert result.trades[0].exit_time == 1
