@@ -89,3 +89,32 @@ def test_bot_builds_limit_order_with_price() -> None:
 
     assert bridge.orders[0].order_kind == "limit"
     assert bridge.orders[0].price == 1.20
+
+
+def test_bot_pending_entry_carries_sl_tp_on_order() -> None:
+    bridge = FakeBridge(MT5OrderResult(accepted=True, order_id="p1", is_pending=True))
+    store = MT5TradeStore(":memory:")
+    signal = Signal("enter_long", order_kind="limit", price=1.2, stop_loss=1.1, take_profit=1.5)
+    bot = _bot(bridge, ScriptedStrategy([signal]), store)
+
+    bot.run_once()
+
+    # The pending order carries SL/TP so the broker applies them when it fills.
+    order = bridge.orders[0]
+    assert order.order_kind == "limit"
+    assert order.stop_loss == 1.1
+    assert order.take_profit == 1.5
+
+
+def test_bot_market_entry_sets_sl_tp_via_modify_not_on_order() -> None:
+    bridge = FakeBridge(MT5OrderResult(accepted=True, order_id="m1"))
+    store = MT5TradeStore(":memory:")
+    signal = Signal("enter_long", stop_loss=0.9, take_profit=1.4)
+    bot = _bot(bridge, ScriptedStrategy([signal]), store)
+
+    bot.run_once()
+
+    # Market entries keep SL/TP off the order and apply them after the fill via modify_sltp.
+    assert bridge.orders[0].stop_loss is None
+    assert bridge.orders[0].take_profit is None
+    assert bridge.sltp == [("EURUSD", 0.9, 1.4)]

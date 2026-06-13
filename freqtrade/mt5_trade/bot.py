@@ -451,6 +451,10 @@ class MT5ForexBot:
         self, symbol: str, intent: OrderIntent, signal: Signal, is_open: bool
     ) -> MT5OrderRequest:
         self._order_seq += 1
+        # A pending entry carries its SL/TP on the order itself, so the broker applies them when
+        # the order fills (the bot only learns of the fill later via reconcile). Market entries
+        # set SL/TP via _apply_sltp after the fill; close orders carry none.
+        pending_entry = is_open and intent.order_kind != "market"
         return MT5OrderRequest(
             symbol=symbol,
             side=intent.side,
@@ -458,8 +462,8 @@ class MT5ForexBot:
             order_kind=intent.order_kind,
             price=intent.price,
             expiration=intent.expiration,
-            # SL/TP travel on the broker-side modify, not the entry order, so the same code
-            # path works for market entries and later adjustments.
+            stop_loss=intent.stop_loss if pending_entry else None,
+            take_profit=intent.take_profit if pending_entry else None,
             client_order_id=f"{symbol}-{self._order_seq}",
             comment=signal.comment,
         )
