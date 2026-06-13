@@ -3,11 +3,17 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
-from freqtrade.mt5_trade.data import MT5DataFeed
+from freqtrade.mt5_trade.data import MT5Bar, MT5DataFeed
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
-from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderRequest, MT5SymbolMapping, OrderSide
+from freqtrade.mt5_trade.models import (
+    MT5BotConfig,
+    MT5OrderRequest,
+    MT5SymbolMapping,
+    OrderSide,
+    split_lot,
+)
 from freqtrade.mt5_trade.notifier import LoggingNotifier, Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
@@ -16,6 +22,24 @@ from freqtrade.mt5_trade.strategy import MT5Strategy, Signal
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _Managed:
+    """Scale-out bookkeeping for an open position the bot is managing toward TP1/breakeven."""
+
+    side: OrderSide
+    volume: float
+    entry_price: float
+    tp1: float
+    close_fraction: float
+    move_be: bool
+    scaled: bool = False
+
+
+def _target_crossed(side: OrderSide, level: float, bar: MT5Bar) -> bool:
+    # A favorable target: longs hit it on the bar high, shorts on the bar low.
+    return bar.high >= level if side == "buy" else bar.low <= level
 
 
 class MT5ForexBot:
@@ -67,6 +91,8 @@ class MT5ForexBot:
         self._pendings: dict[str, tuple[OrderSide, float, int | None]] = {}
         # symbol -> the iteration a pending order was placed, for bot-side expiry.
         self._pending_placed: dict[str, int] = {}
+        # symbol -> scale-out bookkeeping for positions opened with a TP1 plan.
+        self._managed: dict[str, _Managed] = {}
 
     @property
     def running(self) -> bool:
@@ -79,6 +105,8 @@ class MT5ForexBot:
             bars = self._feed.latest_bars(symbol, self._config.warmup_bars)
             if not bars:
                 continue
+            # Scale out before asking the strategy, mirroring the backtester's ordering.
+            self._manage_scale_out(symbol, bars[-1])
             signal = self._strategy.on_bar(symbol, bars)
             self._handle_signal(symbol, signal, reference_price=bars[-1].close)
         self._expire_pendings()
@@ -161,6 +189,7 @@ class MT5ForexBot:
         for symbol in list(self._positions):
             if symbol not in broker:
                 self._positions.pop(symbol, None)
+                self._managed.pop(symbol, None)
                 self._store.close_position(symbol)
                 # The broker closed this position (e.g. SL/TP); let the strategy reset state.
                 self._strategy.on_position_closed(symbol)
@@ -286,8 +315,10 @@ class MT5ForexBot:
             self._positions[symbol] = (intent.side, volume)
             self._store.open_position(symbol, intent.side, volume, reference_price)
             self._apply_sltp(symbol, signal)
+            self._register_scale_out(symbol, intent, volume, reference_price)
         else:
             self._positions.pop(symbol, None)
+            self._managed.pop(symbol, None)
             self._store.close_position(symbol)
             self._strategy.on_position_closed(symbol)
 
@@ -316,6 +347,87 @@ class MT5ForexBot:
         if not result.accepted:
             logger.warning("SL/TP modify for %s rejected: %s", symbol, result.message)
             self._notify(f"SL/TP {symbol} rejected: {result.message}")
+
+    def _register_scale_out(
+        self, symbol: str, intent: OrderIntent, volume: float, entry_price: float
+    ) -> None:
+        if intent.tp1 is None or intent.tp1_close_fraction is None:
+            self._managed.pop(symbol, None)
+            return
+        self._managed[symbol] = _Managed(
+            side=intent.side,
+            volume=volume,
+            entry_price=entry_price,
+            tp1=intent.tp1,
+            close_fraction=intent.tp1_close_fraction,
+            move_be=intent.move_sl_to_breakeven,
+        )
+
+    def _manage_scale_out(self, symbol: str, bar: MT5Bar) -> None:
+        """Close the TP1 fraction and move the stop to breakeven once price reaches TP1."""
+        managed = self._managed.get(symbol)
+        if managed is None or managed.scaled:
+            return
+        if not _target_crossed(managed.side, managed.tp1, bar):
+            return
+
+        position = self._positions.get(symbol)
+        if position is None:
+            self._managed.pop(symbol, None)
+            return
+
+        side, volume = position
+        mapping = self._symbol_mappings.get(symbol)
+        split = split_lot(
+            volume,
+            managed.close_fraction,
+            min_lot=mapping.min_lot if mapping is not None else 0.0,
+            lot_step=mapping.lot_step if mapping is not None else 0.0,
+        )
+        if split is None:
+            # Cannot divide into two lot-step-aligned legs that both clear min_lot; run whole.
+            managed.scaled = True
+            self._notify(f"scale-out skipped for {symbol}: cannot split into valid lots")
+            return
+        close_volume, remaining = split
+
+        close_side: OrderSide = "sell" if side == "buy" else "buy"
+        self._order_seq += 1
+        order = MT5OrderRequest(
+            symbol=symbol,
+            side=close_side,
+            volume=close_volume,
+            client_order_id=f"{symbol}-tp1-{self._order_seq}",
+            comment="tp1 scale-out",
+        )
+        result = self._bridge.submit_order(order)
+        self._store.record_order(order, result)
+        if not result.accepted:
+            logger.warning("TP1 scale-out for %s rejected: %s", symbol, result.message)
+            self._notify(f"tp1 scale-out {symbol} rejected: {result.message}")
+            return
+
+        # Track what actually closed. A partial fill leaves a larger runner than requested, so
+        # prefer the broker's reported fill; filled == 0 means nothing closed -> retry next bar.
+        # When the broker reports no fill volume, keep the grid-aligned split remainder.
+        filled = result.filled_volume
+        if filled is not None and filled <= 0:
+            return
+        if filled is not None and filled > 0:
+            closed = filled
+            remaining = volume - closed
+        else:
+            closed = close_volume
+
+        self._positions[symbol] = (side, remaining)
+        self._store.open_position(symbol, side, remaining, managed.entry_price)
+        managed.scaled = True
+        managed.volume = remaining
+        if managed.move_be:
+            be = self._bridge.modify_sltp(symbol, managed.entry_price, None)
+            if not be.accepted:
+                logger.warning("Breakeven SL move for %s rejected: %s", symbol, be.message)
+        self._notify(f"scaled out {symbol} {closed} @ {managed.tp1}; runner {remaining}")
 
     def _build_order(
         self, symbol: str, intent: OrderIntent, signal: Signal, is_open: bool

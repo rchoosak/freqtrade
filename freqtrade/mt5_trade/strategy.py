@@ -27,10 +27,21 @@ class Signal:
     comment: str | None = None
     # Epoch-seconds expiry for a pending entry (broker auto-cancels at that time).
     expiration: int | None = None
+    # Scale-out / breakeven plan. When ``tp1`` is set, the position manager closes
+    # ``tp1_close_fraction`` of the position at ``tp1`` and (optionally) moves the stop to the
+    # entry price, letting the remainder run to a trend-based exit. Independent of ``take_profit``
+    # (which is a single full-position target).
+    tp1: float | None = None
+    tp1_close_fraction: float | None = None
+    move_sl_to_breakeven: bool = False
 
     def __post_init__(self) -> None:
         if self.order_kind != "market" and self.price is None:
             raise ValueError(f"{self.order_kind} entry signal requires an explicit price.")
+        if self.tp1_close_fraction is not None and not 0 < self.tp1_close_fraction < 1:
+            raise ValueError("tp1_close_fraction must be between 0 and 1 (exclusive).")
+        if self.tp1 is not None and self.tp1_close_fraction is None:
+            raise ValueError("tp1 requires tp1_close_fraction.")
 
 
 # Shared singleton for "do nothing" to avoid allocating on every bar.
@@ -167,6 +178,8 @@ class M5TrendM1EntryStrategy(MT5Strategy):
         trend_exit_mode: str = "ma26_cross",
         take_profit_mode: str = "none",
         risk_reward: float = 1.0,
+        tp1_rr: float = 1.0,
+        tp1_close_fraction: float = 0.5,
         use_session_filter: bool = True,
         timezone: str = "Asia/Bangkok",
         sessions: list[str] | None = None,
@@ -192,10 +205,14 @@ class M5TrendM1EntryStrategy(MT5Strategy):
             raise ValueError("stop_mode must be 'm1_swing' or 'm5_previous'.")
         if trend_exit_mode not in {"ma26_cross", "strict_filter"}:
             raise ValueError("trend_exit_mode must be 'ma26_cross' or 'strict_filter'.")
-        if take_profit_mode not in {"none", "risk_reward"}:
-            raise ValueError("take_profit_mode must be 'none' or 'risk_reward'.")
+        if take_profit_mode not in {"none", "risk_reward", "scale_out"}:
+            raise ValueError("take_profit_mode must be 'none', 'risk_reward', or 'scale_out'.")
         if risk_reward <= 0:
             raise ValueError("risk_reward must be > 0.")
+        if tp1_rr <= 0:
+            raise ValueError("tp1_rr must be > 0.")
+        if not 0 < tp1_close_fraction < 1:
+            raise ValueError("tp1_close_fraction must be between 0 and 1 (exclusive).")
 
         self.trend_fast = trend_fast
         self.trend_slow = trend_slow
@@ -217,6 +234,8 @@ class M5TrendM1EntryStrategy(MT5Strategy):
         self.trend_exit_mode = trend_exit_mode
         self.take_profit_mode = take_profit_mode
         self.risk_reward = risk_reward
+        self.tp1_rr = tp1_rr
+        self.tp1_close_fraction = tp1_close_fraction
         self.use_session_filter = use_session_filter
         self.timezone = ZoneInfo(timezone)
         self.sessions = _parse_sessions(
@@ -248,18 +267,26 @@ class M5TrendM1EntryStrategy(MT5Strategy):
 
         if trend == "long" and self._m1_buy_trigger(bars):
             stop_loss = self._stop_loss("buy", bars, m5_bars)
+            tp1, fraction, move_be = self._scale_out("buy", current_bar.close, stop_loss)
             return Signal(
                 action="enter_long",
                 stop_loss=stop_loss,
                 take_profit=self._take_profit("buy", current_bar.close, stop_loss),
+                tp1=tp1,
+                tp1_close_fraction=fraction,
+                move_sl_to_breakeven=move_be,
                 comment="m5 trend long + m1 stoch rsi trigger",
             )
         if trend == "short" and self._m1_sell_trigger(bars):
             stop_loss = self._stop_loss("sell", bars, m5_bars)
+            tp1, fraction, move_be = self._scale_out("sell", current_bar.close, stop_loss)
             return Signal(
                 action="enter_short",
                 stop_loss=stop_loss,
                 take_profit=self._take_profit("sell", current_bar.close, stop_loss),
+                tp1=tp1,
+                tp1_close_fraction=fraction,
+                move_sl_to_breakeven=move_be,
                 comment="m5 trend short + m1 stoch rsi trigger",
             )
         return HOLD
@@ -403,13 +430,30 @@ class M5TrendM1EntryStrategy(MT5Strategy):
         return m5_bars[-1]
 
     def _take_profit(self, side: str, entry_price: float, stop_loss: float) -> float | None:
-        if self.take_profit_mode == "none":
+        # Only the single full-position target mode sets a fixed TP. In scale-out mode the
+        # remainder runs to the trend exit, so there is no fixed full TP.
+        if self.take_profit_mode != "risk_reward":
             return None
 
         risk_distance = abs(entry_price - stop_loss)
         if side == "buy":
             return entry_price + risk_distance * self.risk_reward
         return entry_price - risk_distance * self.risk_reward
+
+    def _scale_out(
+        self, side: str, entry_price: float, stop_loss: float
+    ) -> tuple[float | None, float | None, bool]:
+        # TP1 at tp1_rr x risk; close tp1_close_fraction there and move the stop to breakeven,
+        # letting the rest run to the M5 trend exit (TP2).
+        if self.take_profit_mode != "scale_out":
+            return None, None, False
+        risk_distance = abs(entry_price - stop_loss)
+        tp1 = (
+            entry_price + risk_distance * self.tp1_rr
+            if side == "buy"
+            else entry_price - risk_distance * self.tp1_rr
+        )
+        return tp1, self.tp1_close_fraction, True
 
     def _in_session(self, timestamp: int) -> bool:
         local_time = datetime.fromtimestamp(timestamp, UTC).astimezone(self.timezone).time()

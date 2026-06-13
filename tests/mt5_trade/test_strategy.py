@@ -108,6 +108,36 @@ def test_m5_trend_m1_entry_enters_long_on_pullback_recovery() -> None:
     assert signal.stop_loss == 103.4
 
 
+def test_m5_trend_m1_entry_scale_out_mode_emits_tp1() -> None:
+    bars = _m1_bars_from_m5_closes([100, 101, 102, 103, 104, 103, 105, 106])
+    bars = _append_m1_closes(bars, [110, 107, 104, 105])
+    strategy = M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        stoch_rsi_length=3,
+        stoch_k_smooth=1,
+        stoch_d_smooth=2,
+        swing_lookback=5,
+        stop_buffer=0.5,
+        use_session_filter=False,
+        take_profit_mode="scale_out",
+        tp1_rr=1.0,
+        tp1_close_fraction=0.5,
+    )
+
+    signal = strategy.on_bar("XAUUSD", bars)
+
+    # entry=105, stop=103.4 -> risk 1.6 -> TP1 = 105 + 1.6*1.0 = 106.6
+    assert signal.action == "enter_long"
+    assert signal.stop_loss == 103.4
+    assert signal.tp1 == 106.6
+    assert signal.tp1_close_fraction == 0.5
+    assert signal.move_sl_to_breakeven is True
+    assert signal.take_profit is None  # runner has no fixed full TP
+
+
 def test_m5_trend_m1_entry_enters_short_on_rebound_rejection() -> None:
     bars = _m1_bars_from_m5_closes([110, 109, 108, 107, 106, 107, 105, 104])
     bars = _append_m1_closes(bars, [100, 103, 106, 105])

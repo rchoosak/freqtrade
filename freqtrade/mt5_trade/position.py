@@ -26,6 +26,9 @@ class OrderIntent:
     stop_loss: float | None = None
     take_profit: float | None = None
     expiration: int | None = None
+    tp1: float | None = None
+    tp1_close_fraction: float | None = None
+    move_sl_to_breakeven: bool = False
 
 
 def plan_transitions(
@@ -69,6 +72,9 @@ def plan_transitions(
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             expiration=signal.expiration,
+            tp1=signal.tp1,
+            tp1_close_fraction=signal.tp1_close_fraction,
+            move_sl_to_breakeven=signal.move_sl_to_breakeven,
         )
     )
     return intents

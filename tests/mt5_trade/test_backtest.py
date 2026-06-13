@@ -211,3 +211,79 @@ def test_backtest_runs_with_real_sma_strategy() -> None:
 
     # The up-then-down series should produce at least one completed trade.
     assert result.num_trades >= 1
+
+
+def test_backtest_scale_out_takes_partial_then_runs_remainder() -> None:
+    strategy = ScriptedStrategy(
+        [Signal("enter_long", stop_loss=9.0, tp1=12.0, tp1_close_fraction=0.5,
+                move_sl_to_breakeven=True)]
+    )
+    result = run_backtest(
+        strategy, {"EURUSD": _bars([10, 13, 11])}, default_volume=1.0, warmup_bars=10
+    )
+
+    assert result.num_trades == 2
+    # TP1 leg: half the position closed at TP1 (12).
+    assert result.trades[0].volume == 0.5
+    assert result.trades[0].exit_price == 12.0
+    assert result.trades[0].pnl == 1.0
+    # Runner leg: the remaining half marked out at the final close.
+    assert result.trades[1].volume == 0.5
+    assert result.trades[1].exit_price == 11.0
+    # Only the full (runner) close notifies the strategy; the partial does not.
+    assert strategy.closed == ["EURUSD"]
+
+
+def test_backtest_scale_out_runner_stops_at_breakeven() -> None:
+    strategy = ScriptedStrategy(
+        [Signal("enter_long", stop_loss=9.0, tp1=12.0, tp1_close_fraction=0.5,
+                move_sl_to_breakeven=True)]
+    )
+    # After TP1, price falls below the original 9 stop area — but the stop was moved to entry.
+    result = run_backtest(
+        strategy, {"EURUSD": _bars([10, 13, 9.5])}, default_volume=1.0, warmup_bars=10
+    )
+
+    assert result.num_trades == 2
+    assert result.trades[0].exit_price == 12.0  # TP1 partial
+    # Remainder exits at breakeven (entry = 10), not the original 9 stop.
+    assert result.trades[1].exit_price == 10.0
+    assert result.trades[1].pnl == 0.0
+
+
+def test_backtest_scale_out_full_stop_before_tp1() -> None:
+    # Price hits the original stop before ever reaching TP1 -> whole position closed at the stop.
+    strategy = ScriptedStrategy(
+        [Signal("enter_long", stop_loss=9.0, tp1=12.0, tp1_close_fraction=0.5,
+                move_sl_to_breakeven=True)]
+    )
+    result = run_backtest(
+        strategy, {"EURUSD": _bars([10, 8])}, default_volume=1.0, warmup_bars=10
+    )
+
+    assert result.num_trades == 1
+    assert result.trades[0].volume == 1.0
+    assert result.trades[0].exit_price == 9.0
+
+
+def test_backtest_scale_out_snaps_off_grid_volume() -> None:
+    strategy = ScriptedStrategy(
+        [Signal("enter_long", stop_loss=9.0, tp1=12.0, tp1_close_fraction=0.5,
+                move_sl_to_breakeven=True)]
+    )
+    result = run_backtest(
+        strategy,
+        {"XAUUSD": _bars([10, 13, 11])},
+        default_volume=0.03,
+        warmup_bars=10,
+        symbol_mappings={
+            "XAUUSD": MT5SymbolMapping(
+                base="XAU", quote="USD", mt5_symbol="XAUUSD", min_lot=0.01, lot_step=0.01
+            )
+        },
+    )
+
+    assert result.num_trades == 2
+    # 0.03 split 50% on a 0.01 grid -> close 0.01 (not 0.015), runner 0.02; both on-grid.
+    assert result.trades[0].volume == 0.01
+    assert result.trades[1].volume == 0.02

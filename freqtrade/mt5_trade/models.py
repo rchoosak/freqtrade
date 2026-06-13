@@ -260,3 +260,39 @@ def normalize_lot_size(
         )
 
     return float(normalized)
+
+
+def split_lot(
+    volume: float,
+    fraction: float,
+    *,
+    min_lot: float,
+    lot_step: float,
+) -> tuple[float, float] | None:
+    """
+    Split ``volume`` into a close leg (~``fraction``) and the remainder, snapping both down to the
+    broker lot step so neither leg is off-grid, and requiring each to be at least ``min_lot``.
+
+    Returns ``None`` when a valid split is impossible (the position is too small to divide into
+    two valid lots). All arithmetic is in ``Decimal`` to avoid float drift like
+    ``0.03 - 0.01 == 0.0199999...``. Used by both the live bot and the backtester so the scale-out
+    close size matches between them.
+    """
+    minimum = Decimal(str(min_lot))
+    vol = Decimal(str(volume))
+    frac = Decimal(str(fraction))
+
+    if lot_step > 0:
+        step = Decimal(str(lot_step))
+        units = (vol / step).to_integral_value(rounding=ROUND_FLOOR)
+        close_units = (units * frac).to_integral_value(rounding=ROUND_FLOOR)
+        close = (close_units * step).quantize(step)
+        remaining = ((units - close_units) * step).quantize(step)
+    else:
+        # No grid to snap to; split on the raw fraction.
+        close = vol * frac
+        remaining = vol - close
+
+    if close < minimum or remaining < minimum:
+        return None
+    return float(close), float(remaining)

@@ -229,7 +229,20 @@ symbol suffixes and spreads may not match a live broker exactly.
 3. Richer order metadata: `MT5TradeStore.mt5_orders` records `order_kind`, `price`, and
    `expiration` alongside each order.
 
-**Phase 7 — Remaining live integration (future)**
+**Phase 7 — Scale-out / breakeven / TP2 (implemented offline; live + backtest)**
+1. `Signal.tp1` / `tp1_close_fraction` / `move_sl_to_breakeven` describe a partial-take-profit
+   plan that flows through `plan_transitions` to both the bot and the backtester.
+2. `M5TrendM1EntryStrategy` with `take_profit_mode="scale_out"` (params `tp1_rr`, default 1.0;
+   `tp1_close_fraction`, default 0.5) sets TP1 = entry ± tp1_rr × risk, closes that fraction at
+   TP1, moves the stop to breakeven, and lets the remainder run to the existing M5 trend exit
+   (TP2). No fixed full TP in this mode.
+3. Backtest (`run_backtest`): simulates TP1 partial fill (a separate trade leg), the breakeven
+   stop move, and the runner exit; stop is resolved before TP on the same bar (conservative).
+4. Live (`MT5ForexBot`): on each bar checks TP1 against the latest range, submits a partial close
+   for the fraction, and moves the broker stop to entry. Skips the split when either leg would
+   fall below the symbol's minimum lot (runs the position whole instead).
+
+**Phase 8 — Remaining live integration (future)**
 - End-to-end validation on a Windows host against a demo MT5 terminal (the only path that
   cannot be exercised off-Windows).
 

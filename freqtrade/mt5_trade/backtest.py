@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
 from freqtrade.mt5_trade.data import MT5Bar
-from freqtrade.mt5_trade.models import MT5SymbolMapping, OrderKind, OrderSide
+from freqtrade.mt5_trade.models import MT5SymbolMapping, OrderKind, OrderSide, split_lot
 from freqtrade.mt5_trade.position import plan_transitions
 from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
 from freqtrade.mt5_trade.strategy import MT5Strategy, Signal
@@ -70,6 +70,10 @@ class _OpenState:
     entry_time: int
     stop_loss: float | None = None
     take_profit: float | None = None
+    tp1: float | None = None
+    tp1_close_fraction: float | None = None
+    move_be: bool = False
+    scaled: bool = False
 
 
 @dataclass
@@ -80,12 +84,15 @@ class _Pending:
     kind: OrderKind
     stop_loss: float | None = None
     take_profit: float | None = None
+    tp1: float | None = None
+    tp1_close_fraction: float | None = None
+    move_be: bool = False
 
 
-def _pnl(state: _OpenState, exit_price: float) -> float:
+def _pnl_for(side: OrderSide, entry_price: float, exit_price: float, volume: float) -> float:
     # Profit in price units * volume; long gains when price rises, short when it falls.
-    direction = 1.0 if state.side == "buy" else -1.0
-    return (exit_price - state.entry_price) * direction * state.volume
+    direction = 1.0 if side == "buy" else -1.0
+    return (exit_price - entry_price) * direction * volume
 
 
 def _is_filled(pending: _Pending, bar: MT5Bar) -> bool:
@@ -138,8 +145,8 @@ def run_backtest(
                 position = _open_from_pending(pending, bar.time)
                 pending = None
 
-            position, current_balance = _stop_position_if_hit(
-                strategy, result, symbol, position, bar, current_balance
+            position, current_balance = _manage_open_position(
+                strategy, result, symbol, position, bar, current_balance, mapping
             )
 
             window = bars[: index + 1][-warmup_bars:]
@@ -206,25 +213,69 @@ def _current_state(
     return None
 
 
-def _stop_position_if_hit(
+def _manage_open_position(
     strategy: MT5Strategy,
     result: BacktestResult,
     symbol: str,
     position: _OpenState | None,
     bar: MT5Bar,
     current_balance: float | None,
+    mapping: MT5SymbolMapping | None,
 ) -> tuple[_OpenState | None, float | None]:
     if position is None or position.entry_time == bar.time:
         return position, current_balance
 
-    stop_exit = _stop_exit_price(position, bar)
-    if stop_exit is None:
+    # Conservative ordering: a stop is resolved before any take-profit on the same bar.
+    stop = position.stop_loss
+    if stop is not None and _stop_crossed(position.side, stop, bar):
+        return None, _record_close(
+            strategy, result, symbol, position, stop, bar.time, current_balance
+        )
+
+    # Scale-out: close a fraction at TP1, move the stop to breakeven, let the rest run.
+    if (
+        not position.scaled
+        and position.tp1 is not None
+        and _target_crossed(position.side, position.tp1, bar)
+    ):
+        split = split_lot(
+            position.volume,
+            position.tp1_close_fraction or 0.0,
+            min_lot=mapping.min_lot if mapping is not None else 0.0,
+            lot_step=mapping.lot_step if mapping is not None else 0.0,
+        )
+        if split is None:
+            # Can't split into two valid legs; run the whole position to the trend exit.
+            return replace(position, scaled=True, tp1=None), current_balance
+        closed, remaining = split
+        current_balance = _record_partial(
+            result, symbol, position, position.tp1, bar.time, closed, current_balance
+        )
+        position = replace(
+            position,
+            volume=remaining,
+            stop_loss=position.entry_price if position.move_be else position.stop_loss,
+            scaled=True,
+            tp1=None,
+        )
         return position, current_balance
 
-    new_balance = _record_close(
-        strategy, result, symbol, position, stop_exit, bar.time, current_balance
-    )
-    return None, new_balance
+    # Single full-position target (risk_reward mode).
+    tp = position.take_profit
+    if tp is not None and _target_crossed(position.side, tp, bar):
+        return None, _record_close(
+            strategy, result, symbol, position, tp, bar.time, current_balance
+        )
+
+    return position, current_balance
+
+
+def _stop_crossed(side: OrderSide, level: float, bar: MT5Bar) -> bool:
+    return bar.low <= level if side == "buy" else bar.high >= level
+
+
+def _target_crossed(side: OrderSide, level: float, bar: MT5Bar) -> bool:
+    return bar.high >= level if side == "buy" else bar.low <= level
 
 
 def _apply_signal_intents(
@@ -295,6 +346,9 @@ def _open_from_pending(pending: _Pending, entry_time: int) -> _OpenState:
         entry_time,
         pending.stop_loss,
         pending.take_profit,
+        pending.tp1,
+        pending.tp1_close_fraction,
+        pending.move_be,
     )
 
 
@@ -306,6 +360,9 @@ def _open_from_intent(intent, entry_price: float, entry_time: int) -> _OpenState
         entry_time,
         intent.stop_loss,
         intent.take_profit,
+        intent.tp1,
+        intent.tp1_close_fraction,
+        intent.move_sl_to_breakeven,
     )
 
 
@@ -317,21 +374,10 @@ def _pending_from_intent(intent) -> _Pending:
         intent.order_kind,
         intent.stop_loss,
         intent.take_profit,
+        intent.tp1,
+        intent.tp1_close_fraction,
+        intent.move_sl_to_breakeven,
     )
-
-
-def _stop_exit_price(position: _OpenState, bar: MT5Bar) -> float | None:
-    if position.side == "buy":
-        if position.stop_loss is not None and bar.low <= position.stop_loss:
-            return position.stop_loss
-        if position.take_profit is not None and bar.high >= position.take_profit:
-            return position.take_profit
-    else:
-        if position.stop_loss is not None and bar.high >= position.stop_loss:
-            return position.stop_loss
-        if position.take_profit is not None and bar.low <= position.take_profit:
-            return position.take_profit
-    return None
 
 
 def _record_close(
@@ -343,26 +389,50 @@ def _record_close(
     exit_time: int,
     current_balance: float | None,
 ) -> float | None:
-    trade = _close_trade(symbol, state, exit_price, exit_time)
-    result.trades.append(trade)
-    # Mirror the live bot: every close (SL/TP, strategy exit, reversal, end-of-data) tells the
-    # strategy so stateful strategies can reset per-symbol tracking.
+    new_balance = _book_trade(
+        result, symbol, state, exit_price, exit_time, state.volume, current_balance
+    )
+    # A full close tells the strategy so stateful strategies reset per-symbol tracking.
     strategy.on_position_closed(symbol)
+    return new_balance
+
+
+def _record_partial(
+    result: BacktestResult,
+    symbol: str,
+    state: _OpenState,
+    exit_price: float,
+    exit_time: int,
+    volume: float,
+    current_balance: float | None,
+) -> float | None:
+    # A scale-out leg closes only part of the position; it is still open, so the strategy is
+    # NOT told of a close here.
+    return _book_trade(result, symbol, state, exit_price, exit_time, volume, current_balance)
+
+
+def _book_trade(
+    result: BacktestResult,
+    symbol: str,
+    state: _OpenState,
+    exit_price: float,
+    exit_time: int,
+    volume: float,
+    current_balance: float | None,
+) -> float | None:
+    pnl = _pnl_for(state.side, state.entry_price, exit_price, volume)
+    result.trades.append(
+        BacktestTrade(
+            symbol=symbol,
+            side=state.side,
+            volume=volume,
+            entry_time=state.entry_time,
+            exit_time=exit_time,
+            entry_price=state.entry_price,
+            exit_price=exit_price,
+            pnl=pnl,
+        )
+    )
     if current_balance is None:
         return None
-    return current_balance + trade.pnl * result.contract_size
-
-
-def _close_trade(
-    symbol: str, state: _OpenState, exit_price: float, exit_time: int
-) -> BacktestTrade:
-    return BacktestTrade(
-        symbol=symbol,
-        side=state.side,
-        volume=state.volume,
-        entry_time=state.entry_time,
-        exit_time=exit_time,
-        entry_price=state.entry_price,
-        exit_price=exit_price,
-        pnl=_pnl(state, exit_price),
-    )
+    return current_balance + pnl * result.contract_size

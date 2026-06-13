@@ -527,3 +527,29 @@ def test_gateway_ignores_expiration_on_market_order(bridge_config: MT5BridgeConf
 
     assert request["type_time"] == FakeMT5.ORDER_TIME_GTC
     assert "expiration" not in request
+
+
+def test_split_lot_snaps_off_grid_legs() -> None:
+    from freqtrade.mt5_trade.models import split_lot
+
+    # 0.03 * 0.5 = 0.015 is off the 0.01 grid -> close floored to 0.01, remainder 0.02.
+    assert split_lot(0.03, 0.5, min_lot=0.01, lot_step=0.01) == (0.01, 0.02)
+
+
+def test_split_lot_returns_none_when_close_below_min() -> None:
+    from freqtrade.mt5_trade.models import split_lot
+
+    assert split_lot(0.01, 0.5, min_lot=0.01, lot_step=0.01) is None
+
+
+def test_split_lot_returns_none_when_remainder_below_min() -> None:
+    from freqtrade.mt5_trade.models import split_lot
+
+    # 0.03 * 0.95 -> close 0.02 (>= min) but remainder 0.01 < min 0.02 -> no valid split.
+    assert split_lot(0.03, 0.95, min_lot=0.02, lot_step=0.01) is None
+
+
+def test_split_lot_without_grid_uses_raw_fraction() -> None:
+    from freqtrade.mt5_trade.models import split_lot
+
+    assert split_lot(1.0, 0.5, min_lot=0.0, lot_step=0.0) == (0.5, 0.5)
