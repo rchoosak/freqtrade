@@ -118,3 +118,15 @@ def test_bot_market_entry_sets_sl_tp_via_modify_not_on_order() -> None:
     assert bridge.orders[0].stop_loss is None
     assert bridge.orders[0].take_profit is None
     assert bridge.sltp == [("EURUSD", 0.9, 1.4)]
+
+
+def test_bot_tracks_broker_request_volume_when_fill_unknown() -> None:
+    # Broker normalized to 0.02 (reported via requested_volume) with no fill volume returned.
+    bridge = FakeBridge(MT5OrderResult(accepted=True, order_id="x", requested_volume=0.02))
+    store = MT5TradeStore(":memory:")
+    bot = _bot(bridge, ScriptedStrategy([Signal("enter_long")]), store)
+
+    bot.run_once()
+
+    # The bot tracks the broker-sent 0.02, not the config-sized 0.05.
+    assert bot._positions["EURUSD"] == ("buy", 0.02)

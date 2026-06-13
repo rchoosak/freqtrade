@@ -209,6 +209,9 @@ class MT5OrderResult:
     message: str | None = None
     # Executed volume, which can be less than requested on a partial fill (None if unknown).
     filled_volume: float | None = None
+    # Volume actually sent to the broker after its own lot normalization. May differ from the
+    # bot's config-normalized request when the broker's symbol rules differ from the config.
+    requested_volume: float | None = None
     # True when the broker accepted a resting pending order (placed, not yet filled).
     is_pending: bool = False
     raw: Any = None

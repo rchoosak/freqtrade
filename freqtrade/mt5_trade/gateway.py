@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from types import ModuleType
 from typing import Any
 
@@ -113,7 +114,10 @@ class LazyMT5Gateway:
 
     def order_send(self, order: MT5OrderRequest) -> MT5OrderResult:
         request = self.build_order_send_request(order)
-        return self._dispatch(request, description=f"order_send {order.symbol} {order.side}")
+        result = self._dispatch(request, description=f"order_send {order.symbol} {order.side}")
+        # request["volume"] is normalized against the broker's symbol_info, so report it back —
+        # it can differ from the bot's config-normalized request when broker rules differ.
+        return replace(result, requested_volume=float(request["volume"]))
 
     def _dispatch(self, request: dict[str, Any], *, description: str) -> MT5OrderResult:
         """Send a trade request with one transparent reconnect+retry on a dropped link."""

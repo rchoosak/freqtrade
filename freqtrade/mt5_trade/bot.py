@@ -10,6 +10,7 @@ from freqtrade.mt5_trade.execution import MT5ExecutionBridge
 from freqtrade.mt5_trade.models import (
     MT5BotConfig,
     MT5OrderRequest,
+    MT5OrderResult,
     MT5SymbolMapping,
     OrderSide,
     split_lot,
@@ -39,6 +40,18 @@ class _Managed:
 def _target_crossed(side: OrderSide, level: float, bar: MT5Bar) -> bool:
     # A favorable target: longs hit it on the bar high, shorts on the bar low.
     return bar.high >= level if side == "buy" else bar.low <= level
+
+
+def _resolved_volume(result: MT5OrderResult, fallback: float) -> float:
+    """
+    Volume the broker actually acted on: the fill if reported, else the broker-normalized request
+    volume (which can differ from the bot's config-normalized request), else the fallback.
+    """
+    if result.filled_volume is not None and result.filled_volume > 0:
+        return result.filled_volume
+    if result.requested_volume is not None and result.requested_volume > 0:
+        return result.requested_volume
+    return fallback
 
 
 class MT5ForexBot:
@@ -326,9 +339,9 @@ class MT5ForexBot:
             return True
 
         if is_open:
-            # A partial fill means the broker executed less than requested; track what we got.
-            filled = result.filled_volume
-            volume = filled if filled is not None and filled > 0 else intent.volume
+            # Track what the broker actually acted on (fill, else its normalized request volume),
+            # which can differ from intent.volume when broker lot rules differ from the config.
+            volume = _resolved_volume(result, intent.volume)
             self._positions[symbol] = (intent.side, volume)
             self._store.open_position(symbol, intent.side, volume, reference_price)
             self._apply_sltp(symbol, signal)
@@ -426,14 +439,17 @@ class MT5ForexBot:
             self._notify(f"tp1 scale-out {symbol} rejected: {result.message}")
             return
 
-        # Track what actually closed. A partial fill leaves a larger runner than requested, so
-        # prefer the broker's reported fill; filled == 0 means nothing closed -> retry next bar.
-        # When the broker reports no fill volume, keep the grid-aligned split remainder.
+        # Track what actually closed. Prefer the broker's reported fill, then its normalized
+        # request volume; filled == 0 means nothing closed -> retry next bar. When the broker
+        # reports neither, keep the grid-aligned split remainder.
         filled = result.filled_volume
         if filled is not None and filled <= 0:
             return
         if filled is not None and filled > 0:
             closed = filled
+            remaining = volume - closed
+        elif result.requested_volume is not None and result.requested_volume > 0:
+            closed = result.requested_volume
             remaining = volume - closed
         else:
             closed = close_volume

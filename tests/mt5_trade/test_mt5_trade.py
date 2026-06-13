@@ -565,3 +565,14 @@ def test_dry_run_rejects_pending_entry(bridge_config: MT5BridgeConfig) -> None:
     assert result.accepted is False
     assert result.is_pending is False
     assert "limit" in result.message
+
+
+def test_gateway_reports_normalized_request_volume(bridge_config: MT5BridgeConfig) -> None:
+    fake = FakeMT5()
+    live_config = MT5BridgeConfig(symbols=bridge_config.symbols, dry_run=False)
+    gateway = LazyMT5Gateway(live_config, mt5_module=fake)
+
+    result = gateway.order_send(MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.017))
+
+    # 0.017 is normalized to the broker's 0.01 lot step and reported back.
+    assert result.requested_volume == 0.01
