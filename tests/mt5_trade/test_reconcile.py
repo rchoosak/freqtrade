@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.bot import MT5ForexBot
 from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.models import (
@@ -75,6 +78,21 @@ def test_reconcile_adopts_unknown_broker_position() -> None:
     assert store.open_positions()["EURUSD"].ticket == 1
 
 
+def test_reconcile_rejects_duplicate_broker_positions_for_symbol() -> None:
+    store = MT5TradeStore(":memory:")
+    bridge = FakeBridge(
+        [
+            BrokerPosition("EURUSD", "buy", 0.10, price=1.08, ticket=1),
+            BrokerPosition("EURUSD", "sell", 0.10, price=1.09, ticket=2),
+        ],
+        [],
+    )
+    bot = _bot(bridge, store)
+
+    with pytest.raises(OperationalException, match="Multiple broker positions"):
+        bot.reconcile()
+
+
 def test_reconcile_drops_externally_closed_position() -> None:
     store = MT5TradeStore(":memory:")
     store.open_position("EURUSD", "buy", 0.10, 1.10)
@@ -121,6 +139,21 @@ def test_reconcile_adopts_broker_pending_order() -> None:
     bot.reconcile()
 
     assert bot._pendings["EURUSD"] == ("buy", 0.10, 5)
+
+
+def test_reconcile_rejects_duplicate_broker_orders_for_symbol() -> None:
+    store = MT5TradeStore(":memory:")
+    bridge = FakeBridge(
+        [],
+        [
+            BrokerOrder("EURUSD", "buy", 0.10, price=1.07, ticket=5),
+            BrokerOrder("EURUSD", "sell", 0.10, price=1.06, ticket=6),
+        ],
+    )
+    bot = _bot(bridge, store)
+
+    with pytest.raises(OperationalException, match="Multiple broker orders"):
+        bot.reconcile()
 
 
 def test_reconcile_moves_filled_pending_to_position() -> None:

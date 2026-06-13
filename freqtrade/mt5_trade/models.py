@@ -170,6 +170,8 @@ class MT5OrderRequest:
     comment: str | None = None
     # Epoch-seconds expiry for a pending order; the broker auto-cancels it at that time.
     expiration: int | None = None
+    # Broker position ticket to close/reduce on MT5 hedging accounts.
+    position_ticket: int | None = None
 
     def __post_init__(self) -> None:
         _validate_literal("side", self.side, get_args(OrderSide))
@@ -177,6 +179,13 @@ class MT5OrderRequest:
         _validate_literal("time_in_force", self.time_in_force, get_args(TimeInForce))
         if self.volume <= 0:
             raise ValueError(f"Invalid volume {self.volume!r}. Expected a positive lot size.")
+        if self.position_ticket is not None:
+            if self.position_ticket <= 0:
+                raise ValueError(
+                    f"Invalid position_ticket {self.position_ticket!r}. Expected a positive id."
+                )
+            if self.order_kind != "market":
+                raise ValueError("position_ticket is only supported for market close orders.")
 
 
 @dataclass(frozen=True)

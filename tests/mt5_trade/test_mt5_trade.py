@@ -185,6 +185,8 @@ def test_dry_run_order_does_not_call_gateway(bridge_config: MT5BridgeConfig) -> 
         ({"order_kind": "instant"}, "Invalid order_kind"),
         ({"time_in_force": "DAY"}, "Invalid time_in_force"),
         ({"volume": 0}, "Invalid volume"),
+        ({"position_ticket": 0}, "Invalid position_ticket"),
+        ({"order_kind": "limit", "price": 1.0, "position_ticket": 1}, "position_ticket"),
     ],
 )
 def test_order_request_validates_runtime_values(kwargs, message) -> None:
@@ -217,9 +219,23 @@ def test_gateway_builds_market_order_request(bridge_config: MT5BridgeConfig) -> 
     assert request["tp"] == 1.09
     assert request["comment"] == "order-1"
     assert request["type_time"] == FakeMT5.ORDER_TIME_GTC
+    assert "position" not in request
     # Default (GTC) market deals must fill immediately; RETURN would be rejected by most
     # brokers, so the gateway picks an immediate-or-cancel policy instead.
     assert request["type_filling"] == FakeMT5.ORDER_FILLING_IOC
+
+
+def test_gateway_sets_position_ticket_on_market_close(
+    bridge_config: MT5BridgeConfig,
+) -> None:
+    gateway = LazyMT5Gateway(bridge_config, mt5_module=FakeMT5())
+
+    request = gateway.build_order_send_request(
+        MT5OrderRequest(symbol="EUR/USD", side="sell", volume=0.01, position_ticket=42)
+    )
+
+    assert request["action"] == FakeMT5.TRADE_ACTION_DEAL
+    assert request["position"] == 42
 
 
 @pytest.mark.parametrize(

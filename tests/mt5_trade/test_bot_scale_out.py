@@ -34,6 +34,24 @@ class FakeBridge:
         self.closed = True
 
 
+class NumericOrderBridge(FakeBridge):
+    def submit_order(self, order):
+        self.orders.append(order)
+        return MT5OrderResult(accepted=True, order_id="12345")
+
+
+class BrokerPositionBridge(FakeBridge):
+    def __init__(self, positions) -> None:
+        super().__init__()
+        self._positions = positions
+
+    def broker_positions(self):
+        return self._positions
+
+    def broker_orders(self):
+        return []
+
+
 class ScriptedStrategy(MT5Strategy):
     def __init__(self, signals: list[Signal]) -> None:
         self._signals = list(signals)
@@ -88,6 +106,41 @@ def test_bot_scales_out_half_and_moves_stop_to_breakeven() -> None:
     assert bot._managed["EURUSD"].scaled is True
     # Partial scale-out is not a full close -> strategy not notified.
     assert store.open_positions()["EURUSD"].volume == 0.5
+
+
+def test_bot_does_not_store_market_order_id_as_position_ticket() -> None:
+    bridge = NumericOrderBridge()
+    store = MT5TradeStore(":memory:")
+    bot = _bot(bridge, ScriptedStrategy([Signal("enter_long")]), store, default_volume=1.0)
+
+    bot.run_once()
+
+    assert store.open_positions()["EURUSD"].ticket is None
+    assert bot._position_ids["EURUSD"][1] is None
+
+
+def test_bot_exit_order_carries_position_ticket() -> None:
+    bridge = FakeBridge()
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 1.0, 10.0, ticket=42)
+    bot = _bot(bridge, ScriptedStrategy([Signal("exit")]), store, default_volume=1.0)
+
+    bot.run_once()
+
+    assert bridge.orders[0].position_ticket == 42
+
+
+def test_bot_close_reconciles_to_learn_missing_position_ticket() -> None:
+    from freqtrade.mt5_trade.models import BrokerPosition
+
+    bridge = BrokerPositionBridge([BrokerPosition("EURUSD", "buy", 1.0, price=10.0, ticket=77)])
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 1.0, 10.0)
+    bot = _bot(bridge, ScriptedStrategy([Signal("exit")]), store, default_volume=1.0)
+
+    bot.run_once()
+
+    assert bridge.orders[0].position_ticket == 77
 
 
 def test_bot_scale_out_skipped_when_position_too_small_to_split() -> None:
@@ -148,6 +201,19 @@ def test_bot_scale_out_snaps_off_grid_close_volume() -> None:
     # 0.03 * 0.5 = 0.015 is off-grid -> snapped to a 0.01 close, leaving a 0.02 runner.
     assert bridge.orders[1].volume == 0.01
     assert bot._positions["EURUSD"] == ("buy", 0.02)
+
+
+def test_bot_scale_out_order_carries_position_ticket() -> None:
+    bridge = FakeBridge()
+    store = MT5TradeStore(":memory:")
+    bot = _bot(bridge, ScriptedStrategy([_entry_signal(), HOLD]), store, default_volume=1.0)
+
+    bot.run_once()
+    bot._position_ids["EURUSD"] = (10.0, 42)
+    bot._feed.advance()
+    bot.run_once()
+
+    assert bridge.orders[1].position_ticket == 42
 
 
 class PartialFillBridge:

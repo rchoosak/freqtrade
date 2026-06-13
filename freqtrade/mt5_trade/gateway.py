@@ -289,6 +289,8 @@ class LazyMT5Gateway:
             request["sl"] = round(order.stop_loss, mapping.price_precision)
         if order.take_profit is not None:
             request["tp"] = round(order.take_profit, mapping.price_precision)
+        if order.position_ticket is not None:
+            request["position"] = order.position_ticket
         # A broker-side expiry only applies to resting (pending) orders.
         if order.expiration is not None and order.order_kind != "market":
             request["expiration"] = order.expiration

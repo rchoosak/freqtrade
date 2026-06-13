@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from typing import Any
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar, MT5DataFeed
@@ -56,6 +57,7 @@ def _resolved_volume(result: MT5OrderResult, fallback: float) -> float:
 
 
 def _ticket_from_order_id(order_id: str | None) -> int | None:
+    """Pending order tickets are returned as order ids; market fills do not use this."""
     return int(order_id) if order_id is not None and order_id.isdigit() else None
 
 
@@ -76,6 +78,31 @@ def _position_identity_changed(
     if old_ticket is not None and new_ticket is not None and old_ticket != new_ticket:
         return True
     return not _same_price(old_price, new_price)
+
+
+def _ticket_learned(
+    old: tuple[float | None, int | None] | None,
+    new: tuple[float | None, int | None],
+) -> bool:
+    return old is not None and old[1] is None and new[1] is not None
+
+
+def _unique_by_symbol(items: Iterable[Any], label: str) -> dict[str, Any]:
+    unique: dict[str, Any] = {}
+    duplicates: set[str] = set()
+    for item in items:
+        symbol = item.symbol
+        if symbol in unique:
+            duplicates.add(symbol)
+            continue
+        unique[symbol] = item
+    if duplicates:
+        symbols = ", ".join(sorted(duplicates))
+        raise OperationalException(
+            f"Multiple broker {label} for symbol(s): {symbols}. mt5-trade supports one "
+            f"{label[:-1]} per symbol; resolve the broker state manually before continuing."
+        )
+    return unique
 
 
 class MT5ForexBot:
@@ -232,10 +259,13 @@ class MT5ForexBot:
         and drops ones that were closed or cancelled externally, so the bot never trades on a
         stale picture. A pending order that filled moves from the pending slot to a position.
         """
+        self._refresh_from_broker()
+
+    def _refresh_from_broker(self) -> bool:
         positions = self._bridge.broker_positions()
         orders = self._bridge.broker_orders()
         if positions is None and orders is None:
-            return
+            return False
 
         changes: list[str] = []
         self._reconcile_positions(positions or [], changes)
@@ -243,15 +273,17 @@ class MT5ForexBot:
 
         if changes:
             self._notify("Reconciled: " + ", ".join(changes))
+        return True
 
     def _reconcile_positions(self, positions: list, changes: list[str]) -> None:
-        broker = {pos.symbol: pos for pos in positions}
+        broker = _unique_by_symbol(positions, "positions")
         for symbol, pos in broker.items():
             state = (pos.side, pos.volume)
             identity = (pos.price, pos.ticket)
             slot_changed = self._positions.get(symbol) != state
             identity_changed = _position_identity_changed(self._position_ids.get(symbol), identity)
-            if slot_changed or identity_changed:
+            ticket_learned = _ticket_learned(self._position_ids.get(symbol), identity)
+            if slot_changed or identity_changed or ticket_learned:
                 if identity_changed:
                     self._managed.pop(symbol, None)
                     self._store.clear_managed_position(symbol)
@@ -271,7 +303,10 @@ class MT5ForexBot:
                 changes.append(f"{symbol}->flat")
 
     def _reconcile_pendings(self, orders: list, changes: list[str]) -> None:
-        broker = {o.symbol: (o.side, o.volume, o.ticket) for o in orders}
+        broker = {
+            symbol: (order.side, order.volume, order.ticket)
+            for symbol, order in _unique_by_symbol(orders, "orders").items()
+        }
         for symbol, state in broker.items():
             # A filled order is a position now (handled above); don't double-occupy the slot.
             if symbol not in self._positions and self._pendings.get(symbol) != state:
@@ -392,7 +427,15 @@ class MT5ForexBot:
         if not is_open and symbol in self._pendings:
             return self._cancel_pending(symbol)
 
-        order = self._build_order(symbol, intent, signal, is_open)
+        position_ticket = None
+        if not is_open:
+            ticket_ok, position_ticket = self._resolve_position_ticket(symbol, intent.reason)
+            if not ticket_ok:
+                return False
+
+        order = self._build_order(
+            symbol, intent, signal, is_open, position_ticket=position_ticket
+        )
         result = self._bridge.submit_order(order)
         self._store.record_order(order, result)
 
@@ -425,10 +468,9 @@ class MT5ForexBot:
             # Use the broker's actual fill price as the entry (the last-candle close only
             # approximates it); breakeven and bookkeeping then reference the true entry.
             entry_price = result.fill_price if result.fill_price is not None else reference_price
-            ticket = _ticket_from_order_id(result.order_id)
             self._positions[symbol] = (intent.side, volume)
-            self._position_ids[symbol] = (entry_price, ticket)
-            self._store.open_position(symbol, intent.side, volume, entry_price, ticket=ticket)
+            self._position_ids[symbol] = (entry_price, None)
+            self._store.open_position(symbol, intent.side, volume, entry_price, ticket=None)
             self._apply_sltp(symbol, signal)
             self._register_scale_out(symbol, intent, entry_price)
         else:
@@ -442,6 +484,25 @@ class MT5ForexBot:
             f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"
         )
         return True
+
+    def _resolve_position_ticket(
+        self, symbol: str, reason: str
+    ) -> tuple[bool, int | None]:
+        ticket = self._position_ids.get(symbol, (None, None))[1]
+        if ticket is not None:
+            return True, ticket
+
+        broker_available = self._refresh_from_broker()
+        ticket = self._position_ids.get(symbol, (None, None))[1]
+        if broker_available and ticket is None:
+            message = (
+                f"{reason} {symbol} rejected: broker position ticket is required to close "
+                "safely on MT5 hedging accounts."
+            )
+            logger.warning(message)
+            self._notify(message)
+            return False, None
+        return True, ticket
 
     def _cancel_pending(self, symbol: str, reason: str = "cancelled") -> bool:
         """Cancel a resting pending order. Returns True if the slot is now clear, else False."""
@@ -522,12 +583,17 @@ class MT5ForexBot:
             return
         close_volume, remaining = split
 
+        ticket_ok, position_ticket = self._resolve_position_ticket(symbol, "tp1 scale-out")
+        if not ticket_ok:
+            return
+
         close_side: OrderSide = "sell" if side == "buy" else "buy"
         self._order_seq += 1
         order = MT5OrderRequest(
             symbol=symbol,
             side=close_side,
             volume=close_volume,
+            position_ticket=position_ticket,
             client_order_id=f"{symbol}-tp1-{self._order_seq}",
             comment="tp1 scale-out",
         )
@@ -585,7 +651,13 @@ class MT5ForexBot:
         )
 
     def _build_order(
-        self, symbol: str, intent: OrderIntent, signal: Signal, is_open: bool
+        self,
+        symbol: str,
+        intent: OrderIntent,
+        signal: Signal,
+        is_open: bool,
+        *,
+        position_ticket: int | None = None,
     ) -> MT5OrderRequest:
         self._order_seq += 1
         # A pending entry carries its SL/TP on the order itself, so the broker applies them when
@@ -601,6 +673,7 @@ class MT5ForexBot:
             expiration=intent.expiration,
             stop_loss=intent.stop_loss if pending_entry else None,
             take_profit=intent.take_profit if pending_entry else None,
+            position_ticket=position_ticket,
             client_order_id=f"{symbol}-{self._order_seq}",
             comment=signal.comment,
         )
