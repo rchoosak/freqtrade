@@ -271,3 +271,10 @@ def test_signal_rejects_unknown_action() -> None:
 def test_signal_rejects_unknown_order_kind() -> None:
     with pytest.raises(ValueError, match="Invalid order_kind"):
         Signal(action="enter_long", order_kind="stoploss", price=1.0)  # type: ignore[arg-type]
+
+
+def test_signal_rejects_non_positive_volume() -> None:
+    with pytest.raises(ValueError, match="Invalid volume"):
+        Signal(action="enter_long", volume=0)
+    with pytest.raises(ValueError, match="Invalid volume"):
+        Signal(action="enter_long", volume=-0.5)

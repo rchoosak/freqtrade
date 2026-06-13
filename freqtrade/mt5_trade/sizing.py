@@ -133,6 +133,22 @@ class PositionSizer:
             requested = min(requested, max_lot)
         return self._normalize(requested, min_lot, lot_step, max_lot, symbol)
 
+    def snap(
+        self,
+        volume: float,
+        *,
+        symbol: str,
+        mapping: MT5SymbolMapping | None = None,
+    ) -> SizingDecision:
+        """
+        Snap an explicit (strategy-provided) volume to the broker lot rules, returning a skip
+        decision when it cannot meet them. Used so an explicit ``Signal.volume`` is held to the
+        same min-lot/lot-step/max-lot constraints as sized entries.
+        """
+        min_lot = self.min_lot if self.min_lot is not None else _mapping_min_lot(mapping)
+        lot_step = self.lot_step if self.lot_step is not None else _mapping_lot_step(mapping)
+        return self._normalize(volume, min_lot, lot_step, self.max_lot, symbol)
+
     def _normalize(
         self,
         volume: float,

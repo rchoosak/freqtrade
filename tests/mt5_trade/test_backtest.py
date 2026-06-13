@@ -352,3 +352,19 @@ def test_backtest_multi_symbol_close_at_end_updates_balance_in_time_order() -> N
 
     b_trade = next(t for t in result.trades if t.symbol == "B")
     assert b_trade.volume == 22.0
+
+
+def test_backtest_normalizes_explicit_off_grid_volume() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long", volume=0.025), Signal("exit")])
+    result = run_backtest(
+        strategy, {"XAUUSD": _bars([100, 110])}, default_volume=0.01, warmup_bars=10,
+        symbol_mappings={
+            "XAUUSD": MT5SymbolMapping(
+                base="XAU", quote="USD", mt5_symbol="XAUUSD", min_lot=0.01, lot_step=0.01
+            )
+        },
+    )
+
+    assert result.num_trades == 1
+    # 0.025 floored to the 0.01 lot grid -> 0.02.
+    assert result.trades[0].volume == 0.02

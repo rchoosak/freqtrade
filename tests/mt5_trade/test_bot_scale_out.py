@@ -226,3 +226,18 @@ def test_bot_scale_out_retries_when_nothing_filled() -> None:
     assert bot._positions["EURUSD"] == ("buy", 0.04)
     assert bot._managed["EURUSD"].scaled is False
     assert bridge.sltp == []
+
+
+def test_bot_normalizes_explicit_off_grid_volume() -> None:
+    bridge = FakeBridge()
+    store = MT5TradeStore(":memory:")
+    bot = _bot(
+        bridge, ScriptedStrategy([Signal("enter_long", volume=0.025), HOLD]), store,
+        default_volume=0.01, mappings=_scale_mapping(),
+    )
+
+    bot.run_once()
+
+    # Explicit 0.025 snapped to the 0.01 grid -> 0.02 in both the order and tracked state.
+    assert bridge.orders[0].volume == 0.02
+    assert bot._positions["EURUSD"] == ("buy", 0.02)

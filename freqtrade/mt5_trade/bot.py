@@ -260,8 +260,19 @@ class MT5ForexBot:
         reference_price: float,
     ) -> Signal | None:
         side = entry_side_for_action(signal.action)
-        if side is None or signal.volume is not None:
+        if side is None:
             return signal
+        if signal.volume is not None:
+            # Explicit volume still has to obey the broker lot rules before we track it.
+            decision = self._position_sizer.snap(
+                signal.volume, symbol=symbol, mapping=self._symbol_mappings.get(symbol)
+            )
+            if decision.skipped:
+                message = decision.reason or f"{symbol}: explicit volume rejected by lot rules."
+                logger.warning(message)
+                self._notify(message)
+                return None
+            return replace(signal, volume=decision.volume)
         if current is not None and current[0] == side:
             return signal
 

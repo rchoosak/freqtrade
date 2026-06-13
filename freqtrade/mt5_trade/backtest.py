@@ -340,8 +340,14 @@ def _size_signal(
     mapping: MT5SymbolMapping | None,
 ) -> Signal | None:
     side = entry_side_for_action(signal.action)
-    if side is None or signal.volume is not None:
+    if side is None:
         return signal
+    if signal.volume is not None:
+        # Explicit volume still has to obey the broker lot rules (same as the live bot).
+        decision = position_sizer.snap(signal.volume, symbol=symbol, mapping=mapping)
+        if decision.skipped:
+            return None
+        return replace(signal, volume=decision.volume)
     if current is not None and current[0] == side:
         return signal
 

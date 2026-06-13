@@ -45,6 +45,8 @@ class Signal:
         if self.order_kind not in get_args(OrderKind):
             allowed = ", ".join(get_args(OrderKind))
             raise ValueError(f"Invalid order_kind {self.order_kind!r}. Expected one of: {allowed}.")
+        if self.volume is not None and self.volume <= 0:
+            raise ValueError(f"Invalid volume {self.volume!r}. Expected a positive lot size.")
         if self.order_kind != "market" and self.price is None:
             raise ValueError(f"{self.order_kind} entry signal requires an explicit price.")
         if self.tp1_close_fraction is not None and not 0 < self.tp1_close_fraction < 1:
