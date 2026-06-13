@@ -154,6 +154,7 @@ class LazyMT5Gateway:
             retcode=retcode,
             message=comment,
             filled_volume=_optional_float(getattr(response, "volume", None)),
+            fill_price=_optional_float(getattr(response, "price", None)),
             is_pending=is_pending,
             raw=response,
         )

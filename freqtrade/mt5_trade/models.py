@@ -212,6 +212,8 @@ class MT5OrderResult:
     # Volume actually sent to the broker after its own lot normalization. May differ from the
     # bot's config-normalized request when the broker's symbol rules differ from the config.
     requested_volume: float | None = None
+    # Actual execution price reported by the broker (None if unknown / not filled).
+    fill_price: float | None = None
     # True when the broker accepted a resting pending order (placed, not yet filled).
     is_pending: bool = False
     raw: Any = None

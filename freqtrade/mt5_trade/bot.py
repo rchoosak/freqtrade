@@ -342,10 +342,13 @@ class MT5ForexBot:
             # Track what the broker actually acted on (fill, else its normalized request volume),
             # which can differ from intent.volume when broker lot rules differ from the config.
             volume = _resolved_volume(result, intent.volume)
+            # Use the broker's actual fill price as the entry (the last-candle close only
+            # approximates it); breakeven and bookkeeping then reference the true entry.
+            entry_price = result.fill_price if result.fill_price is not None else reference_price
             self._positions[symbol] = (intent.side, volume)
-            self._store.open_position(symbol, intent.side, volume, reference_price)
+            self._store.open_position(symbol, intent.side, volume, entry_price)
             self._apply_sltp(symbol, signal)
-            self._register_scale_out(symbol, intent, reference_price)
+            self._register_scale_out(symbol, intent, entry_price)
         else:
             self._positions.pop(symbol, None)
             self._managed.pop(symbol, None)

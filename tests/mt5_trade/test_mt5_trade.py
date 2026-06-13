@@ -576,3 +576,21 @@ def test_gateway_reports_normalized_request_volume(bridge_config: MT5BridgeConfi
 
     # 0.017 is normalized to the broker's 0.01 lot step and reported back.
     assert result.requested_volume == 0.01
+
+
+class FillPriceMT5(FakeMT5):
+    def order_send(self, request):
+        self.request = request
+        return SimpleNamespace(
+            retcode=self.TRADE_RETCODE_DONE, order=12345, comment="filled",
+            price=1.23456, volume=0.01,
+        )
+
+
+def test_gateway_reports_fill_price(bridge_config: MT5BridgeConfig) -> None:
+    live_config = MT5BridgeConfig(symbols=bridge_config.symbols, dry_run=False)
+    gateway = LazyMT5Gateway(live_config, mt5_module=FillPriceMT5())
+
+    result = gateway.order_send(MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.01))
+
+    assert result.fill_price == 1.23456

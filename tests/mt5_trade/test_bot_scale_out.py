@@ -240,3 +240,49 @@ def test_bot_normalizes_explicit_off_grid_volume() -> None:
     # Explicit 0.025 snapped to the 0.01 grid -> 0.02 in both the order and tracked state.
     assert bridge.orders[0].volume == 0.02
     assert bot._positions["EURUSD"] == ("buy", 0.02)
+
+
+class FillPriceBridge:
+    """Entry fills at a configured price (the scale-out close uses no fill price)."""
+
+    def __init__(self, entry_fill_price: float) -> None:
+        self._entry_fill_price = entry_fill_price
+        self.orders: list = []
+        self.sltp: list = []
+        self.closed = False
+
+    def submit_order(self, order):
+        self.orders.append(order)
+        if order.comment == "tp1 scale-out":
+            return MT5OrderResult(accepted=True, order_id="c")
+        return MT5OrderResult(accepted=True, order_id="e", fill_price=self._entry_fill_price)
+
+    def modify_sltp(self, symbol, stop_loss, take_profit):
+        self.sltp.append((symbol, stop_loss, take_profit))
+        return MT5OrderResult(accepted=True, order_id=None)
+
+    def cancel_order(self, ticket):
+        return MT5OrderResult(accepted=True, order_id=str(ticket))
+
+    def broker_positions(self):
+        return None
+
+    def broker_orders(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+def test_bot_scale_out_breakeven_uses_actual_fill_price() -> None:
+    # Entry fills at 10.5 even though the last candle closed at 10.0.
+    bridge = FillPriceBridge(entry_fill_price=10.5)
+    store = MT5TradeStore(":memory:")
+    bot = _bot(bridge, ScriptedStrategy([_entry_signal(), HOLD]), store, default_volume=1.0)
+
+    bot.run_once()
+    bot._feed.advance()
+    bot.run_once()
+
+    # Breakeven stop moves to the true fill (10.5), not the candle close (10.0).
+    assert bridge.sltp == [("EURUSD", 10.5, None)]
