@@ -29,7 +29,6 @@ class _Managed:
     """Scale-out bookkeeping for an open position the bot is managing toward TP1/breakeven."""
 
     side: OrderSide
-    volume: float
     entry_price: float
     tp1: float
     close_fraction: float
@@ -333,7 +332,7 @@ class MT5ForexBot:
             self._positions[symbol] = (intent.side, volume)
             self._store.open_position(symbol, intent.side, volume, reference_price)
             self._apply_sltp(symbol, signal)
-            self._register_scale_out(symbol, intent, volume, reference_price)
+            self._register_scale_out(symbol, intent, reference_price)
         else:
             self._positions.pop(symbol, None)
             self._managed.pop(symbol, None)
@@ -370,14 +369,13 @@ class MT5ForexBot:
             self._notify(f"SL/TP {symbol} rejected: {result.message}")
 
     def _register_scale_out(
-        self, symbol: str, intent: OrderIntent, volume: float, entry_price: float
+        self, symbol: str, intent: OrderIntent, entry_price: float
     ) -> None:
         if intent.tp1 is None or intent.tp1_close_fraction is None:
             self._managed.pop(symbol, None)
             return
         self._managed[symbol] = _Managed(
             side=intent.side,
-            volume=volume,
             entry_price=entry_price,
             tp1=intent.tp1,
             close_fraction=intent.tp1_close_fraction,
@@ -443,7 +441,6 @@ class MT5ForexBot:
         self._positions[symbol] = (side, remaining)
         self._store.open_position(symbol, side, remaining, managed.entry_price)
         managed.scaled = True
-        managed.volume = remaining
         if managed.move_be:
             be = self._bridge.modify_sltp(symbol, managed.entry_price, None)
             if not be.accepted:

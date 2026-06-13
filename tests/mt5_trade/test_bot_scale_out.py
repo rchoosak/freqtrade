@@ -207,7 +207,6 @@ def test_bot_scale_out_tracks_actual_partial_fill() -> None:
     # Order requested 0.02, but only 0.01 filled -> runner reflects the true remaining 0.03.
     assert bridge.orders[1].volume == 0.02
     assert bot._positions["EURUSD"][1] == pytest.approx(0.03)
-    assert bot._managed["EURUSD"].volume == pytest.approx(0.03)
 
 
 def test_bot_scale_out_retries_when_nothing_filled() -> None:
