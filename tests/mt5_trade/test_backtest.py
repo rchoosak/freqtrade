@@ -10,13 +10,36 @@ from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal, SmaCrossStra
 class ScriptedStrategy(MT5Strategy):
     def __init__(self, signals: list[Signal]) -> None:
         self._signals = list(signals)
+        self.closed: list[str] = []
 
     def on_bar(self, symbol, bars):
         return self._signals.pop(0) if self._signals else HOLD
 
+    def on_position_closed(self, symbol: str) -> None:
+        self.closed.append(symbol)
+
 
 def _bars(closes: list[float]) -> list[MT5Bar]:
     return [MT5Bar(time=i, open=c, high=c, low=c, close=c) for i, c in enumerate(closes)]
+
+
+def test_backtest_notifies_strategy_on_stop_loss_close() -> None:
+    # Long with SL at 9; the next bar dips to 8 -> SL fires outside on_bar -> callback runs.
+    strategy = ScriptedStrategy([Signal("enter_long", stop_loss=9.0), HOLD])
+    result = run_backtest(
+        strategy, {"EURUSD": _bars([10, 8])}, default_volume=1.0, warmup_bars=10
+    )
+
+    assert result.num_trades == 1
+    assert result.trades[0].exit_price == 9.0  # closed at the stop, not the bar close
+    assert strategy.closed == ["EURUSD"]
+
+
+def test_backtest_notifies_strategy_on_exit_signal_close() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long"), Signal("exit")])
+    run_backtest(strategy, {"EURUSD": _bars([1, 2, 3])}, default_volume=1.0, warmup_bars=10)
+
+    assert strategy.closed == ["EURUSD"]
 
 
 def test_backtest_computes_round_trip_pnl() -> None:

@@ -161,3 +161,21 @@ def test_m5_trend_m1_entry_exits_when_m5_trend_invalidates() -> None:
 
     assert strategy.on_bar("XAUUSD", long_bars).action == "hold"
     assert strategy.on_bar("XAUUSD", neutral_bars).action == "exit"
+
+
+def test_m5_trend_m1_entry_resets_state_on_position_closed() -> None:
+    strategy = _m5_m1_strategy()
+    long_bars = _m1_bars_from_m5_closes([100, 101, 102, 103, 104, 103, 105, 106])
+    neutral_bars = _m1_bars_from_m5_closes([100, 101, 102, 103, 104, 103, 105, 106, 104])
+
+    # on_bar records the M5 trend as the active position direction.
+    assert strategy.on_bar("XAUUSD", long_bars).action == "hold"
+    assert strategy._last_trend.get("XAUUSD") == "long"
+
+    # An external close (SL/TP/broker/reconcile) clears the tracked state...
+    strategy.on_position_closed("XAUUSD")
+    assert "XAUUSD" not in strategy._last_trend
+
+    # ...so the trend-invalidation no longer emits a stale exit for a position that is gone
+    # (contrast test_m5_trend_m1_entry_exits_when_m5_trend_invalidates, which sees "exit").
+    assert strategy.on_bar("XAUUSD", neutral_bars).action != "exit"

@@ -13,8 +13,14 @@ from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy
 
 
 class _NoSignalStrategy(MT5Strategy):
+    def __init__(self) -> None:
+        self.closed: list[str] = []
+
     def on_bar(self, symbol, bars):
         return HOLD
+
+    def on_position_closed(self, symbol: str) -> None:
+        self.closed.append(symbol)
 
 
 class FakeBridge:
@@ -77,6 +83,20 @@ def test_reconcile_drops_externally_closed_position() -> None:
     bot.reconcile()
 
     assert store.open_positions() == {}
+
+
+def test_reconcile_drop_notifies_strategy() -> None:
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 0.10, 1.10)
+    bridge = FakeBridge([])  # broker is flat -> external close
+    strategy = _NoSignalStrategy()
+    feed = ReplayDataFeed({"EURUSD": [MT5Bar(0, 1, 1, 1, 1)]}, warmup=1)
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=1, poll_interval=1.0)
+    bot = MT5ForexBot(bridge, feed, strategy, store, cfg, default_volume=0.01)
+
+    bot.reconcile()
+
+    assert strategy.closed == ["EURUSD"]
 
 
 def test_reconcile_noop_in_dry_run() -> None:

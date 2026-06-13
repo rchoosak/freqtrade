@@ -44,6 +44,14 @@ class MT5Strategy(ABC):
     def on_bar(self, symbol: str, bars: list[MT5Bar]) -> Signal:
         """Return a Signal given the most recent bars (oldest first)."""
 
+    def on_position_closed(self, symbol: str) -> None:  # noqa: B027  # optional override
+        """
+        Notify the strategy that ``symbol``'s position was closed outside of ``on_bar`` — by a
+        stop-loss/take-profit, the broker, or reconciliation. Stateful strategies override this
+        to reset per-symbol tracking so the next setup isn't masked by stale internal state.
+        No-op by default.
+        """
+
 
 def _sma(values: list[float], length: int) -> float:
     window = values[-length:]
@@ -255,6 +263,11 @@ class M5TrendM1EntryStrategy(MT5Strategy):
                 comment="m5 trend short + m1 stoch rsi trigger",
             )
         return HOLD
+
+    def on_position_closed(self, symbol: str) -> None:
+        # A real close (SL/TP/external/reconcile) ends the tracked trend position; forget it so
+        # the next opposite M5 setup is not masked by a stale exit on this symbol.
+        self._last_trend.pop(symbol, None)
 
     @property
     def _minimum_m5_bars(self) -> int:

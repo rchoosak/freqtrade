@@ -162,6 +162,8 @@ class MT5ForexBot:
             if symbol not in broker:
                 self._positions.pop(symbol, None)
                 self._store.close_position(symbol)
+                # The broker closed this position (e.g. SL/TP); let the strategy reset state.
+                self._strategy.on_position_closed(symbol)
                 changes.append(f"{symbol}->flat")
 
     def _reconcile_pendings(self, orders: list, changes: list[str]) -> None:
@@ -287,6 +289,7 @@ class MT5ForexBot:
         else:
             self._positions.pop(symbol, None)
             self._store.close_position(symbol)
+            self._strategy.on_position_closed(symbol)
 
         self._notify(
             f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"

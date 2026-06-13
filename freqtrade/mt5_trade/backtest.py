@@ -139,7 +139,7 @@ def run_backtest(
                 pending = None
 
             position, current_balance = _stop_position_if_hit(
-                result, symbol, position, bar, current_balance
+                strategy, result, symbol, position, bar, current_balance
             )
 
             window = bars[: index + 1][-warmup_bars:]
@@ -160,6 +160,7 @@ def run_backtest(
                 continue
 
             position, pending, current_balance = _apply_signal_intents(
+                strategy,
                 result,
                 symbol,
                 position,
@@ -173,7 +174,7 @@ def run_backtest(
 
         if close_at_end and position is not None and bars:
             current_balance = _record_close(
-                result, symbol, position, bars[-1].close, bars[-1].time, current_balance
+                strategy, result, symbol, position, bars[-1].close, bars[-1].time, current_balance
             )
 
     return result
@@ -206,6 +207,7 @@ def _current_state(
 
 
 def _stop_position_if_hit(
+    strategy: MT5Strategy,
     result: BacktestResult,
     symbol: str,
     position: _OpenState | None,
@@ -219,11 +221,14 @@ def _stop_position_if_hit(
     if stop_exit is None:
         return position, current_balance
 
-    new_balance = _record_close(result, symbol, position, stop_exit, bar.time, current_balance)
+    new_balance = _record_close(
+        strategy, result, symbol, position, stop_exit, bar.time, current_balance
+    )
     return None, new_balance
 
 
 def _apply_signal_intents(
+    strategy: MT5Strategy,
     result: BacktestResult,
     symbol: str,
     position: _OpenState | None,
@@ -238,7 +243,7 @@ def _apply_signal_intents(
         if intent.result is None:
             if position is not None:
                 current_balance = _record_close(
-                    result, symbol, position, bar.close, bar.time, current_balance
+                    strategy, result, symbol, position, bar.close, bar.time, current_balance
                 )
                 position = None
             else:
@@ -330,6 +335,7 @@ def _stop_exit_price(position: _OpenState, bar: MT5Bar) -> float | None:
 
 
 def _record_close(
+    strategy: MT5Strategy,
     result: BacktestResult,
     symbol: str,
     state: _OpenState,
@@ -339,6 +345,9 @@ def _record_close(
 ) -> float | None:
     trade = _close_trade(symbol, state, exit_price, exit_time)
     result.trades.append(trade)
+    # Mirror the live bot: every close (SL/TP, strategy exit, reversal, end-of-data) tells the
+    # strategy so stateful strategies can reset per-symbol tracking.
+    strategy.on_position_closed(symbol)
     if current_balance is None:
         return None
     return current_balance + trade.pnl * result.contract_size
