@@ -553,3 +553,15 @@ def test_split_lot_without_grid_uses_raw_fraction() -> None:
     from freqtrade.mt5_trade.models import split_lot
 
     assert split_lot(1.0, 0.5, min_lot=0.0, lot_step=0.0) == (0.5, 0.5)
+
+
+def test_dry_run_rejects_pending_entry(bridge_config: MT5BridgeConfig) -> None:
+    bridge = MT5ExecutionBridge(bridge_config)
+
+    result = bridge.submit_order(
+        MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.01, order_kind="limit", price=1.05)
+    )
+
+    assert result.accepted is False
+    assert result.is_pending is False
+    assert "limit" in result.message

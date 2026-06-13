@@ -19,6 +19,18 @@ class MT5ExecutionBridge:
     def submit_order(self, order: MT5OrderRequest) -> MT5OrderResult:
         if self._config.dry_run:
             mapping = self._config.mapping_for(order.symbol)
+            # Dry-run cannot simulate a resting order waiting to be touched; treating a
+            # limit/stop entry as an instant fill would diverge from both live (which rests the
+            # order) and backtest-mt5 (which fills it when price reaches the level). Reject it.
+            if order.order_kind != "market":
+                return MT5OrderResult(
+                    accepted=False,
+                    order_id=None,
+                    message=(
+                        f"Dry-run does not simulate {order.order_kind} (pending) entries; "
+                        "use backtest-mt5 for limit/stop fills."
+                    ),
+                )
             # Apply the same lot normalization/validation as live so a volume that the
             # broker would reject does not silently "pass" in dry-run.
             volume = normalize_lot_size(
