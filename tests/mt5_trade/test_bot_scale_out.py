@@ -286,3 +286,34 @@ def test_bot_scale_out_breakeven_uses_actual_fill_price() -> None:
 
     # Breakeven stop moves to the true fill (10.5), not the candle close (10.0).
     assert bridge.sltp == [("EURUSD", 10.5, None)]
+
+
+def test_bot_restores_scale_out_plan_after_restart() -> None:
+    store = MT5TradeStore(":memory:")
+    first_bridge = FakeBridge()
+    first = _bot(
+        first_bridge,
+        ScriptedStrategy([_entry_signal()]),
+        store,
+        default_volume=1.0,
+    )
+    first.run_once()
+    assert "EURUSD" in first._managed
+
+    restarted_bridge = FakeBridge()
+    restarted = _bot(
+        restarted_bridge,
+        ScriptedStrategy([HOLD]),
+        store,
+        default_volume=1.0,
+    )
+    assert "EURUSD" in restarted._managed
+
+    restarted._feed.advance()
+    restarted.run_once()
+
+    assert len(restarted_bridge.orders) == 1
+    assert restarted_bridge.orders[0].comment == "tp1 scale-out"
+    assert restarted_bridge.sltp == [("EURUSD", 10.0, None)]
+    assert store.open_positions()["EURUSD"].volume == 0.5
+    assert store.managed_positions()["EURUSD"].scaled is True

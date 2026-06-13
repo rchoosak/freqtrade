@@ -105,7 +105,25 @@ class MT5ForexBot:
         # symbol -> the iteration a pending order was placed, for bot-side expiry.
         self._pending_placed: dict[str, int] = {}
         # symbol -> scale-out bookkeeping for positions opened with a TP1 plan.
-        self._managed: dict[str, _Managed] = {}
+        self._managed: dict[str, _Managed] = self._restore_managed(store)
+
+    @staticmethod
+    def _restore_managed(store: MT5TradeStore) -> dict[str, _Managed]:
+        managed: dict[str, _Managed] = {}
+        open_positions = store.open_positions()
+        for symbol, state in store.managed_positions().items():
+            if symbol not in open_positions:
+                store.clear_managed_position(symbol)
+                continue
+            managed[symbol] = _Managed(
+                side=state.side,  # type: ignore[arg-type]
+                entry_price=state.entry_price,
+                tp1=state.tp1,
+                close_fraction=state.close_fraction,
+                move_be=state.move_be,
+                scaled=state.scaled,
+            )
+        return managed
 
     @property
     def running(self) -> bool:
@@ -203,6 +221,7 @@ class MT5ForexBot:
             if symbol not in broker:
                 self._positions.pop(symbol, None)
                 self._managed.pop(symbol, None)
+                self._store.clear_managed_position(symbol)
                 self._store.close_position(symbol)
                 # The broker closed this position (e.g. SL/TP); let the strategy reset state.
                 self._strategy.on_position_closed(symbol)
@@ -408,13 +427,24 @@ class MT5ForexBot:
     ) -> None:
         if intent.tp1 is None or intent.tp1_close_fraction is None:
             self._managed.pop(symbol, None)
+            self._store.clear_managed_position(symbol)
             return
-        self._managed[symbol] = _Managed(
+        managed = _Managed(
             side=intent.side,
             entry_price=entry_price,
             tp1=intent.tp1,
             close_fraction=intent.tp1_close_fraction,
             move_be=intent.move_sl_to_breakeven,
+        )
+        self._managed[symbol] = managed
+        self._store.set_managed_position(
+            symbol,
+            managed.side,
+            managed.entry_price,
+            managed.tp1,
+            managed.close_fraction,
+            managed.move_be,
+            managed.scaled,
         )
 
     def _manage_scale_out(self, symbol: str, bar: MT5Bar) -> None:
@@ -428,6 +458,7 @@ class MT5ForexBot:
         position = self._positions.get(symbol)
         if position is None:
             self._managed.pop(symbol, None)
+            self._store.clear_managed_position(symbol)
             return
 
         side, volume = position
@@ -441,6 +472,7 @@ class MT5ForexBot:
         if split is None:
             # Cannot divide into two lot-step-aligned legs that both clear min_lot; run whole.
             managed.scaled = True
+            self._persist_managed(symbol, managed)
             self._notify(f"scale-out skipped for {symbol}: cannot split into valid lots")
             return
         close_volume, remaining = split
@@ -479,11 +511,23 @@ class MT5ForexBot:
         self._positions[symbol] = (side, remaining)
         self._store.open_position(symbol, side, remaining, managed.entry_price)
         managed.scaled = True
+        self._persist_managed(symbol, managed)
         if managed.move_be:
             be = self._bridge.modify_sltp(symbol, managed.entry_price, None)
             if not be.accepted:
                 logger.warning("Breakeven SL move for %s rejected: %s", symbol, be.message)
         self._notify(f"scaled out {symbol} {closed} @ {managed.tp1}; runner {remaining}")
+
+    def _persist_managed(self, symbol: str, managed: _Managed) -> None:
+        self._store.set_managed_position(
+            symbol,
+            managed.side,
+            managed.entry_price,
+            managed.tp1,
+            managed.close_fraction,
+            managed.move_be,
+            managed.scaled,
+        )
 
     def _build_order(
         self, symbol: str, intent: OrderIntent, signal: Signal, is_open: bool

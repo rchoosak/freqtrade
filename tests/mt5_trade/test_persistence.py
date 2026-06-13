@@ -39,3 +39,39 @@ def test_store_persists_across_connections(tmp_path) -> None:
 
     reopened = MT5TradeStore(db_path)
     assert "EURUSD" in reopened.open_positions()
+
+
+def test_store_persists_managed_position_metadata(tmp_path) -> None:
+    db_path = str(tmp_path / "trades.sqlite")
+    store = MT5TradeStore(db_path)
+    store.open_position("EURUSD", "buy", 0.04, 1.10)
+    store.set_managed_position(
+        "EURUSD",
+        "buy",
+        entry_price=1.10,
+        tp1=1.12,
+        close_fraction=0.5,
+        move_be=True,
+        scaled=False,
+    )
+    store.close()
+
+    reopened = MT5TradeStore(db_path)
+    managed = reopened.managed_positions()["EURUSD"]
+    assert managed.side == "buy"
+    assert managed.entry_price == 1.10
+    assert managed.tp1 == 1.12
+    assert managed.close_fraction == 0.5
+    assert managed.move_be is True
+    assert managed.scaled is False
+
+
+def test_store_clears_managed_position_with_position() -> None:
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 0.04, 1.10)
+    store.set_managed_position("EURUSD", "buy", 1.10, 1.12, 0.5, True, False)
+
+    store.close_position("EURUSD")
+
+    assert store.open_positions() == {}
+    assert store.managed_positions() == {}

@@ -15,6 +15,17 @@ class OpenPosition:
     entry_price: float | None
 
 
+@dataclass(frozen=True)
+class ManagedPosition:
+    symbol: str
+    side: str
+    entry_price: float
+    tp1: float
+    close_fraction: float
+    move_be: bool
+    scaled: bool
+
+
 class MT5TradeStore:
     """
     Lightweight sqlite store for MT5 orders and open positions.
@@ -54,6 +65,16 @@ class MT5TradeStore:
                 volume REAL NOT NULL,
                 entry_price REAL,
                 opened_ts REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS mt5_managed_positions (
+                symbol TEXT PRIMARY KEY,
+                side TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                tp1 REAL NOT NULL,
+                close_fraction REAL NOT NULL,
+                move_be INTEGER NOT NULL,
+                scaled INTEGER NOT NULL,
+                updated_ts REAL NOT NULL
             );
             """
         )
@@ -103,6 +124,7 @@ class MT5TradeStore:
 
     def close_position(self, symbol: str) -> None:
         self._conn.execute("DELETE FROM mt5_positions WHERE symbol = ?", (symbol,))
+        self.clear_managed_position(symbol)
         self._conn.commit()
 
     def open_positions(self) -> dict[str, OpenPosition]:
@@ -121,6 +143,67 @@ class MT5TradeStore:
 
     def order_count(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM mt5_orders").fetchone()[0])
+
+    def set_managed_position(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        tp1: float,
+        close_fraction: float,
+        move_be: bool,
+        scaled: bool,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO mt5_managed_positions
+                (symbol, side, entry_price, tp1, close_fraction, move_be, scaled, updated_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                side=excluded.side,
+                entry_price=excluded.entry_price,
+                tp1=excluded.tp1,
+                close_fraction=excluded.close_fraction,
+                move_be=excluded.move_be,
+                scaled=excluded.scaled,
+                updated_ts=excluded.updated_ts
+            """,
+            (
+                symbol,
+                side,
+                entry_price,
+                tp1,
+                close_fraction,
+                1 if move_be else 0,
+                1 if scaled else 0,
+                time.time(),
+            ),
+        )
+        self._conn.commit()
+
+    def clear_managed_position(self, symbol: str) -> None:
+        self._conn.execute("DELETE FROM mt5_managed_positions WHERE symbol = ?", (symbol,))
+        self._conn.commit()
+
+    def managed_positions(self) -> dict[str, ManagedPosition]:
+        rows = self._conn.execute(
+            """
+            SELECT symbol, side, entry_price, tp1, close_fraction, move_be, scaled
+            FROM mt5_managed_positions
+            """
+        ).fetchall()
+        return {
+            row["symbol"]: ManagedPosition(
+                symbol=row["symbol"],
+                side=row["side"],
+                entry_price=row["entry_price"],
+                tp1=row["tp1"],
+                close_fraction=row["close_fraction"],
+                move_be=bool(row["move_be"]),
+                scaled=bool(row["scaled"]),
+            )
+            for row in rows
+        }
 
     def close(self) -> None:
         self._conn.close()
