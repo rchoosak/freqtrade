@@ -71,6 +71,8 @@ def test_reconcile_adopts_unknown_broker_position() -> None:
 
     assert store.open_positions()["EURUSD"].side == "buy"
     assert store.open_positions()["EURUSD"].volume == 0.30
+    assert store.open_positions()["EURUSD"].entry_price == 1.08
+    assert store.open_positions()["EURUSD"].ticket == 1
 
 
 def test_reconcile_drops_externally_closed_position() -> None:
@@ -132,6 +134,36 @@ def test_reconcile_moves_filled_pending_to_position() -> None:
 
     assert bot._positions["EURUSD"] == ("buy", 0.10)
     assert "EURUSD" not in bot._pendings
+
+
+def test_reconcile_clears_managed_when_broker_position_identity_changes() -> None:
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 0.10, 1.10, ticket=1)
+    store.set_managed_position("EURUSD", "buy", 1.10, 1.12, 0.5, True, False)
+    bridge = FakeBridge([BrokerPosition("EURUSD", "buy", 0.10, price=1.20, ticket=2)], [])
+    bot = _bot(bridge, store)
+
+    assert "EURUSD" in bot._managed
+
+    bot.reconcile()
+
+    assert "EURUSD" not in bot._managed
+    assert store.managed_positions() == {}
+    position = store.open_positions()["EURUSD"]
+    assert position.entry_price == 1.20
+    assert position.ticket == 2
+
+
+def test_restore_managed_rejects_position_mismatch() -> None:
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "sell", 0.10, 1.10, ticket=1)
+    store.set_managed_position("EURUSD", "buy", 1.10, 1.12, 0.5, True, False)
+    bridge = FakeBridge(None, None)
+
+    bot = _bot(bridge, store)
+
+    assert bot._managed == {}
+    assert store.managed_positions() == {}
 
 
 def test_reconcile_drops_cancelled_pending() -> None:

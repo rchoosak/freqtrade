@@ -55,6 +55,29 @@ def _resolved_volume(result: MT5OrderResult, fallback: float) -> float:
     return fallback
 
 
+def _ticket_from_order_id(order_id: str | None) -> int | None:
+    return int(order_id) if order_id is not None and order_id.isdigit() else None
+
+
+def _same_price(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return True
+    return abs(left - right) <= max(1e-9, abs(left) * 1e-9)
+
+
+def _position_identity_changed(
+    old: tuple[float | None, int | None] | None,
+    new: tuple[float | None, int | None],
+) -> bool:
+    if old is None:
+        return False
+    old_price, old_ticket = old
+    new_price, new_ticket = new
+    if old_ticket is not None and new_ticket is not None and old_ticket != new_ticket:
+        return True
+    return not _same_price(old_price, new_price)
+
+
 class MT5ForexBot:
     """
     Forex trading loop: pull bars -> ask the strategy -> manage one position per symbol ->
@@ -99,6 +122,11 @@ class MT5ForexBot:
             symbol: (pos.side, pos.volume)  # type: ignore[misc]
             for symbol, pos in store.open_positions().items()
         }
+        # symbol -> (entry_price, broker position ticket) used to detect when a broker-side
+        # close/reopen leaves the same side and volume but represents a different live position.
+        self._position_ids: dict[str, tuple[float | None, int | None]] = {
+            symbol: (pos.entry_price, pos.ticket) for symbol, pos in store.open_positions().items()
+        }
         # symbol -> (side, volume, ticket) for resting pending orders the bot placed.
         # In-memory only; rebuilt from the broker via reconcile() (no broker in dry-run).
         self._pendings: dict[str, tuple[OrderSide, float, int | None]] = {}
@@ -112,7 +140,13 @@ class MT5ForexBot:
         managed: dict[str, _Managed] = {}
         open_positions = store.open_positions()
         for symbol, state in store.managed_positions().items():
-            if symbol not in open_positions:
+            open_position = open_positions.get(symbol)
+            if open_position is None:
+                store.clear_managed_position(symbol)
+                continue
+            if state.side != open_position.side or not _same_price(
+                state.entry_price, open_position.entry_price
+            ):
                 store.clear_managed_position(symbol)
                 continue
             managed[symbol] = _Managed(
@@ -211,15 +245,24 @@ class MT5ForexBot:
             self._notify("Reconciled: " + ", ".join(changes))
 
     def _reconcile_positions(self, positions: list, changes: list[str]) -> None:
-        broker = {pos.symbol: (pos.side, pos.volume) for pos in positions}
-        for symbol, state in broker.items():
-            if self._positions.get(symbol) != state:
+        broker = {pos.symbol: pos for pos in positions}
+        for symbol, pos in broker.items():
+            state = (pos.side, pos.volume)
+            identity = (pos.price, pos.ticket)
+            slot_changed = self._positions.get(symbol) != state
+            identity_changed = _position_identity_changed(self._position_ids.get(symbol), identity)
+            if slot_changed or identity_changed:
+                if identity_changed:
+                    self._managed.pop(symbol, None)
+                    self._store.clear_managed_position(symbol)
                 self._positions[symbol] = state
-                self._store.open_position(symbol, state[0], state[1], None)
+                self._position_ids[symbol] = identity
+                self._store.open_position(symbol, state[0], state[1], pos.price, ticket=pos.ticket)
                 changes.append(f"{symbol}->{state[0]} {state[1]}")
         for symbol in list(self._positions):
             if symbol not in broker:
                 self._positions.pop(symbol, None)
+                self._position_ids.pop(symbol, None)
                 self._managed.pop(symbol, None)
                 self._store.clear_managed_position(symbol)
                 self._store.close_position(symbol)
@@ -370,8 +413,7 @@ class MT5ForexBot:
                     f"scale-out (tp1) is not supported for pending entries: {symbol}"
                 )
             # A resting limit/stop order is not a position yet; reconcile() adopts the fill later.
-            oid = result.order_id
-            ticket = int(oid) if oid is not None and oid.isdigit() else None
+            ticket = _ticket_from_order_id(result.order_id)
             self._set_pending(symbol, (intent.side, intent.volume, ticket))
             self._notify(f"pending {intent.side} {symbol} {intent.volume} ({result.order_id})")
             return True
@@ -383,12 +425,15 @@ class MT5ForexBot:
             # Use the broker's actual fill price as the entry (the last-candle close only
             # approximates it); breakeven and bookkeeping then reference the true entry.
             entry_price = result.fill_price if result.fill_price is not None else reference_price
+            ticket = _ticket_from_order_id(result.order_id)
             self._positions[symbol] = (intent.side, volume)
-            self._store.open_position(symbol, intent.side, volume, entry_price)
+            self._position_ids[symbol] = (entry_price, ticket)
+            self._store.open_position(symbol, intent.side, volume, entry_price, ticket=ticket)
             self._apply_sltp(symbol, signal)
             self._register_scale_out(symbol, intent, entry_price)
         else:
             self._positions.pop(symbol, None)
+            self._position_ids.pop(symbol, None)
             self._managed.pop(symbol, None)
             self._store.close_position(symbol)
             self._strategy.on_position_closed(symbol)
@@ -509,7 +554,17 @@ class MT5ForexBot:
             closed = close_volume
 
         self._positions[symbol] = (side, remaining)
-        self._store.open_position(symbol, side, remaining, managed.entry_price)
+        self._position_ids[symbol] = (
+            managed.entry_price,
+            self._position_ids.get(symbol, (None, None))[1],
+        )
+        self._store.open_position(
+            symbol,
+            side,
+            remaining,
+            managed.entry_price,
+            ticket=self._position_ids[symbol][1],
+        )
         managed.scaled = True
         self._persist_managed(symbol, managed)
         if managed.move_be:

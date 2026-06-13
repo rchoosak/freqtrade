@@ -17,15 +17,18 @@ def test_store_records_orders() -> None:
 def test_store_open_and_close_position() -> None:
     store = MT5TradeStore(":memory:")
 
-    store.open_position("EURUSD", "buy", 0.02, 1.085)
+    store.open_position("EURUSD", "buy", 0.02, 1.085, ticket=7)
     positions = store.open_positions()
     assert positions["EURUSD"].side == "buy"
     assert positions["EURUSD"].volume == 0.02
     assert positions["EURUSD"].entry_price == 1.085
+    assert positions["EURUSD"].ticket == 7
 
     # Re-opening the same symbol replaces the row rather than duplicating it.
-    store.open_position("EURUSD", "sell", 0.03, 1.090)
-    assert store.open_positions()["EURUSD"].side == "sell"
+    store.open_position("EURUSD", "sell", 0.03, 1.090, ticket=8)
+    position = store.open_positions()["EURUSD"]
+    assert position.side == "sell"
+    assert position.ticket == 8
 
     store.close_position("EURUSD")
     assert store.open_positions() == {}

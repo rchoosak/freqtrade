@@ -13,6 +13,7 @@ class OpenPosition:
     side: str
     volume: float
     entry_price: float | None
+    ticket: int | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class MT5TradeStore:
                 side TEXT NOT NULL,
                 volume REAL NOT NULL,
                 entry_price REAL,
+                ticket INTEGER,
                 opened_ts REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS mt5_managed_positions (
@@ -78,7 +80,15 @@ class MT5TradeStore:
             );
             """
         )
+        self._ensure_column("mt5_positions", "ticket", "ticket INTEGER")
         self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        columns = {
+            row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
     def record_order(self, order: MT5OrderRequest, result: MT5OrderResult) -> None:
         self._conn.execute(
@@ -106,19 +116,25 @@ class MT5TradeStore:
         self._conn.commit()
 
     def open_position(
-        self, symbol: str, side: str, volume: float, entry_price: float | None
+        self,
+        symbol: str,
+        side: str,
+        volume: float,
+        entry_price: float | None,
+        ticket: int | None = None,
     ) -> None:
         self._conn.execute(
             """
-            INSERT INTO mt5_positions (symbol, side, volume, entry_price, opened_ts)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO mt5_positions (symbol, side, volume, entry_price, ticket, opened_ts)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol) DO UPDATE SET
                 side=excluded.side,
                 volume=excluded.volume,
                 entry_price=excluded.entry_price,
+                ticket=excluded.ticket,
                 opened_ts=excluded.opened_ts
             """,
-            (symbol, side, volume, entry_price, time.time()),
+            (symbol, side, volume, entry_price, ticket, time.time()),
         )
         self._conn.commit()
 
@@ -129,7 +145,7 @@ class MT5TradeStore:
 
     def open_positions(self) -> dict[str, OpenPosition]:
         rows = self._conn.execute(
-            "SELECT symbol, side, volume, entry_price FROM mt5_positions"
+            "SELECT symbol, side, volume, entry_price, ticket FROM mt5_positions"
         ).fetchall()
         return {
             row["symbol"]: OpenPosition(
@@ -137,6 +153,7 @@ class MT5TradeStore:
                 side=row["side"],
                 volume=row["volume"],
                 entry_price=row["entry_price"],
+                ticket=row["ticket"],
             )
             for row in rows
         }
