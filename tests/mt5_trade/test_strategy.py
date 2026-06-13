@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from freqtrade.mt5_trade.data import MT5Bar
-from freqtrade.mt5_trade.strategy import M5TrendM1EntryStrategy, SmaCrossStrategy
+from freqtrade.mt5_trade.strategy import M5TrendM1EntryStrategy, Signal, SmaCrossStrategy
 
 
 def _bars(closes: list[float]) -> list[MT5Bar]:
@@ -69,6 +69,17 @@ def _m5_m1_strategy() -> M5TrendM1EntryStrategy:
 def test_sma_cross_rejects_bad_lengths() -> None:
     with pytest.raises(ValueError, match="shorter than slow"):
         SmaCrossStrategy(fast=30, slow=10)
+
+
+def test_signal_rejects_scale_out_pending_entry() -> None:
+    with pytest.raises(ValueError, match="tp1 scale-out is only supported for market"):
+        Signal(
+            action="enter_long",
+            order_kind="limit",
+            price=1.0,
+            tp1=2.0,
+            tp1_close_fraction=0.5,
+        )
 
 
 def test_sma_cross_holds_without_enough_bars() -> None:

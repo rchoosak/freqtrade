@@ -42,6 +42,8 @@ class Signal:
             raise ValueError("tp1_close_fraction must be between 0 and 1 (exclusive).")
         if self.tp1 is not None and self.tp1_close_fraction is None:
             raise ValueError("tp1 requires tp1_close_fraction.")
+        if self.tp1 is not None and self.order_kind != "market":
+            raise ValueError("tp1 scale-out is only supported for market entry signals.")
 
 
 # Shared singleton for "do nothing" to avoid allocating on every bar.
