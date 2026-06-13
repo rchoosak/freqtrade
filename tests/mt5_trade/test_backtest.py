@@ -287,3 +287,47 @@ def test_backtest_scale_out_snaps_off_grid_volume() -> None:
     # 0.03 split 50% on a 0.01 grid -> close 0.01 (not 0.015), runner 0.02; both on-grid.
     assert result.trades[0].volume == 0.01
     assert result.trades[1].volume == 0.02
+
+
+class _EnterExitStrategy(MT5Strategy):
+    """Enters long when close == 100, exits when close == 110 (per symbol, stateless)."""
+
+    def on_bar(self, symbol, bars):
+        close = bars[-1].close
+        if close == 100:
+            return Signal("enter_long", stop_loss=95)
+        if close == 110:
+            return Signal("exit")
+        return HOLD
+
+
+def test_backtest_multi_symbol_sizes_on_time_ordered_balance() -> None:
+    sizer = PositionSizer.from_config(
+        {"position_sizing": {"mode": "risk_percent", "risk_per_trade": 10.0}},
+        default_lot_size=0.01,
+        contract_size=1.0,
+    )
+    # A wins (+200) but only closes at t=4 — after B enters at t=2. B must be sized on the
+    # balance at t=2 (still 1000 -> vol 20), not A's end-of-period balance (1200 -> vol 24).
+    data = {
+        "A": [MT5Bar(0, 100, 100, 100, 100), MT5Bar(4, 110, 110, 110, 110)],
+        "B": [MT5Bar(2, 100, 100, 100, 100), MT5Bar(6, 110, 110, 110, 110)],
+    }
+    result = run_backtest(
+        _EnterExitStrategy(), data,
+        starting_balance=1000, contract_size=1.0, position_sizer=sizer, warmup_bars=10,
+    )
+
+    b_trade = next(t for t in result.trades if t.symbol == "B")
+    assert b_trade.volume == 20.0
+
+
+def test_backtest_multi_symbol_closes_in_global_time_order() -> None:
+    # B opens later but closes earlier (t=4) than A (t=6); trades must be in time order.
+    data = {
+        "A": [MT5Bar(0, 100, 100, 100, 100), MT5Bar(6, 110, 110, 110, 110)],
+        "B": [MT5Bar(2, 100, 100, 100, 100), MT5Bar(4, 110, 110, 110, 110)],
+    }
+    result = run_backtest(_EnterExitStrategy(), data, default_volume=1.0, warmup_bars=10)
+
+    assert [t.exit_time for t in result.trades] == [4, 6]

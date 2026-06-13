@@ -135,37 +135,52 @@ def run_backtest(
     result = BacktestResult(starting_balance=starting_balance, contract_size=contract_size)
     current_balance = starting_balance
 
-    for symbol, bars in data.items():
-        position: _OpenState | None = None
-        pending: _Pending | None = None
+    # Evolve every symbol as one chronological stream so a shared (risk-percent) balance is the
+    # true account balance at each timestamp, not the end-of-period balance of an earlier symbol.
+    positions: dict[str, _OpenState | None] = {}
+    pendings: dict[str, _Pending | None] = {}
+
+    # Merge all symbols' bars into one time-ordered event stream; ties break by symbol name.
+    events = sorted(
+        (
+            (bar.time, symbol, index)
+            for symbol, bars in data.items()
+            for index, bar in enumerate(bars)
+        ),
+        key=lambda event: (event[0], event[1]),
+    )
+
+    for _bar_time, symbol, index in events:
+        bars = data[symbol]
+        bar = bars[index]
+        position = positions.get(symbol)
+        pending = pendings.get(symbol)
         mapping = symbol_mappings.get(symbol) if symbol_mappings is not None else None
 
-        for index, bar in enumerate(bars):
-            if pending is not None and _is_filled(pending, bar):
-                position = _open_from_pending(pending, bar.time)
-                pending = None
+        if pending is not None and _is_filled(pending, bar):
+            position = _open_from_pending(pending, bar.time)
+            pending = None
 
-            position, current_balance = _manage_open_position(
-                strategy, result, symbol, position, bar, current_balance, mapping
-            )
+        position, current_balance = _manage_open_position(
+            strategy, result, symbol, position, bar, current_balance, mapping
+        )
 
-            window = bars[: index + 1][-warmup_bars:]
-            signal = strategy.on_bar(symbol, window)
-            current = _current_state(position, pending)
+        window = bars[: index + 1][-warmup_bars:]
+        signal = strategy.on_bar(symbol, window)
+        current = _current_state(position, pending)
 
-            sized_signal = _size_signal(
-                sizer,
-                symbol,
-                signal,
-                current,
-                reference_price=bar.close,
-                balance=current_balance,
-                mapping=mapping,
-            )
-            if sized_signal is None:
-                result.skipped_entries += 1
-                continue
-
+        sized_signal = _size_signal(
+            sizer,
+            symbol,
+            signal,
+            current,
+            reference_price=bar.close,
+            balance=current_balance,
+            mapping=mapping,
+        )
+        if sized_signal is None:
+            result.skipped_entries += 1
+        else:
             position, pending, current_balance = _apply_signal_intents(
                 strategy,
                 result,
@@ -179,10 +194,17 @@ def run_backtest(
                 current_balance,
             )
 
-        if close_at_end and position is not None and bars:
-            current_balance = _record_close(
-                strategy, result, symbol, position, bars[-1].close, bars[-1].time, current_balance
-            )
+        positions[symbol] = position
+        pendings[symbol] = pending
+
+    if close_at_end:
+        for symbol, bars in data.items():
+            position = positions.get(symbol)
+            if position is not None and bars:
+                current_balance = _record_close(
+                    strategy, result, symbol, position, bars[-1].close, bars[-1].time,
+                    current_balance,
+                )
 
     return result
 
