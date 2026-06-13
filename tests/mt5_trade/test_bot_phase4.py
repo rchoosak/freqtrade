@@ -139,7 +139,8 @@ def test_bot_tracks_broker_request_volume_when_fill_unknown() -> None:
 def test_bot_pending_entry_does_not_register_scale_out() -> None:
     bridge = FakeBridge(MT5OrderResult(accepted=True, order_id="900", is_pending=True))
     store = MT5TradeStore(":memory:")
-    bot = _bot(bridge, ScriptedStrategy([Signal("enter_long", order_kind="limit", price=1.2)]), store)
+    strategy = ScriptedStrategy([Signal("enter_long", order_kind="limit", price=1.2)])
+    bot = _bot(bridge, strategy, store)
 
     bot.run_once()
 
