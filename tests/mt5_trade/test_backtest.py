@@ -331,3 +331,24 @@ def test_backtest_multi_symbol_closes_in_global_time_order() -> None:
     result = run_backtest(_EnterExitStrategy(), data, default_volume=1.0, warmup_bars=10)
 
     assert [t.exit_time for t in result.trades] == [4, 6]
+
+
+def test_backtest_multi_symbol_close_at_end_updates_balance_in_time_order() -> None:
+    sizer = PositionSizer.from_config(
+        {"position_sizing": {"mode": "risk_percent", "risk_per_trade": 10.0}},
+        default_lot_size=0.01,
+        contract_size=1.0,
+    )
+    # A is marked out (+100) at its last bar t=2; B enters later at t=4 and must be sized on the
+    # post-A-close balance (1100 -> vol 22), not the pre-close balance (1000 -> vol 20).
+    data = {
+        "A": [MT5Bar(0, 100, 100, 100, 100), MT5Bar(2, 105, 105, 105, 105)],
+        "B": [MT5Bar(4, 100, 100, 100, 100), MT5Bar(6, 110, 110, 110, 110)],
+    }
+    result = run_backtest(
+        _EnterExitStrategy(), data,
+        starting_balance=1000, contract_size=1.0, position_sizer=sizer, warmup_bars=10,
+    )
+
+    b_trade = next(t for t in result.trades if t.symbol == "B")
+    assert b_trade.volume == 22.0

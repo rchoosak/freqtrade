@@ -194,17 +194,16 @@ def run_backtest(
                 current_balance,
             )
 
+        # Mark a symbol's still-open position out at its own last bar, in time order, so its
+        # final P&L is in current_balance before any later bar of another symbol is sized.
+        if close_at_end and index == len(bars) - 1 and position is not None:
+            current_balance = _record_close(
+                strategy, result, symbol, position, bar.close, bar.time, current_balance
+            )
+            position = None
+
         positions[symbol] = position
         pendings[symbol] = pending
-
-    if close_at_end:
-        for symbol, bars in data.items():
-            position = positions.get(symbol)
-            if position is not None and bars:
-                current_balance = _record_close(
-                    strategy, result, symbol, position, bars[-1].close, bars[-1].time,
-                    current_balance,
-                )
 
     return result
 
