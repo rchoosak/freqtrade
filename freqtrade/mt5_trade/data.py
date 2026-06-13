@@ -127,7 +127,10 @@ class LiveMT5DataFeed(MT5DataFeed):
 
     def latest_bars(self, symbol: str, count: int) -> list[MT5Bar]:
         self._gateway.connect()
-        rates = self._gateway.mt5.copy_rates_from_pos(symbol, self._timeframe(), 0, count)
+        # Start at position 1, not 0: position 0 is the current, still-forming candle. Strategies
+        # decide on completed candles (matching the backtester's historical bars), so feeding the
+        # in-progress bar would let live act/repaint before the candle closes.
+        rates = self._gateway.mt5.copy_rates_from_pos(symbol, self._timeframe(), 1, count)
         return self._to_bars(symbol, rates, "copy_rates_from_pos")
 
     def bars_range(self, symbol: str, date_from: datetime, date_to: datetime) -> list[MT5Bar]:
