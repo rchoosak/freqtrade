@@ -113,7 +113,16 @@ class LazyMT5Gateway:
             self.connect()
 
     def order_send(self, order: MT5OrderRequest) -> MT5OrderResult:
-        request = self.build_order_send_request(order)
+        try:
+            request = self.build_order_send_request(order)
+        except (ValueError, OperationalException, KeyError) as exc:
+            # Building the request normalizes against the broker's symbol_info, which can be
+            # stricter than the config (below min lot, missing symbol/tick, bad lot step). Return
+            # a rejected result so the bot follows its normal reject path instead of the loop's
+            # generic exception handler.
+            return MT5OrderResult(
+                accepted=False, order_id=None, message=f"order build failed: {exc}"
+            )
         result = self._dispatch(request, description=f"order_send {order.symbol} {order.side}")
         # request["volume"] is normalized against the broker's symbol_info, so report it back —
         # it can differ from the bot's config-normalized request when broker rules differ.

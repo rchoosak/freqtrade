@@ -594,3 +594,24 @@ def test_gateway_reports_fill_price(bridge_config: MT5BridgeConfig) -> None:
     result = gateway.order_send(MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.01))
 
     assert result.fill_price == 1.23456
+
+
+class StrictBrokerMT5(FakeMT5):
+    """Broker whose minimum lot (0.1) is stricter than the config default (0.01)."""
+
+    def symbol_info(self, symbol):
+        return SimpleNamespace(volume_min=0.1, volume_max=100.0, volume_step=0.01)
+
+
+def test_gateway_order_send_rejects_on_broker_normalization_error(
+    bridge_config: MT5BridgeConfig,
+) -> None:
+    live_config = MT5BridgeConfig(symbols=bridge_config.symbols, dry_run=False)
+    gateway = LazyMT5Gateway(live_config, mt5_module=StrictBrokerMT5())
+
+    # 0.05 is below the broker's 0.1 minimum -> build raises, but order_send must convert that
+    # into a rejected result rather than letting the exception escape to the bot loop.
+    result = gateway.order_send(MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.05))
+
+    assert result.accepted is False
+    assert "below minimum" in result.message
