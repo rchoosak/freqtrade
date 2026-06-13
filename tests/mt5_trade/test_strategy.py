@@ -261,3 +261,13 @@ def test_m5_previous_stop_uses_last_completed_bucket_mid_bucket() -> None:
 
     assert strategy._stop_loss("buy", m1_bars, m5_bars) == 30 - 0.5
     assert strategy._stop_loss("sell", m1_bars, m5_bars) == 31 + 0.5
+
+
+def test_signal_rejects_unknown_action() -> None:
+    with pytest.raises(ValueError, match="Invalid action"):
+        Signal(action="enter_longg")  # type: ignore[arg-type]
+
+
+def test_signal_rejects_unknown_order_kind() -> None:
+    with pytest.raises(ValueError, match="Invalid order_kind"):
+        Signal(action="enter_long", order_kind="stoploss", price=1.0)  # type: ignore[arg-type]

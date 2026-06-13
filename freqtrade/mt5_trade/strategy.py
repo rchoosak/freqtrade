@@ -4,7 +4,7 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
-from typing import Literal
+from typing import Literal, get_args
 from zoneinfo import ZoneInfo
 
 from freqtrade.mt5_trade.data import MT5Bar
@@ -36,6 +36,15 @@ class Signal:
     move_sl_to_breakeven: bool = False
 
     def __post_init__(self) -> None:
+        # Literal annotations are not enforced at runtime; validate at the source (the strategy)
+        # so a bad value fails loud here instead of as a KeyError in plan_transitions or as
+        # divergent backtest/live behaviour for an unknown order_kind.
+        if self.action not in get_args(SignalAction):
+            allowed = ", ".join(get_args(SignalAction))
+            raise ValueError(f"Invalid action {self.action!r}. Expected one of: {allowed}.")
+        if self.order_kind not in get_args(OrderKind):
+            allowed = ", ".join(get_args(OrderKind))
+            raise ValueError(f"Invalid order_kind {self.order_kind!r}. Expected one of: {allowed}.")
         if self.order_kind != "market" and self.price is None:
             raise ValueError(f"{self.order_kind} entry signal requires an explicit price.")
         if self.tp1_close_fraction is not None and not 0 < self.tp1_close_fraction < 1:
