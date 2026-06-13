@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.bot import MT5ForexBot
 from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderResult
 from freqtrade.mt5_trade.persistence import MT5TradeStore
+from freqtrade.mt5_trade.position import OrderIntent
 from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal
 
 
@@ -130,3 +134,30 @@ def test_bot_tracks_broker_request_volume_when_fill_unknown() -> None:
 
     # The bot tracks the broker-sent 0.02, not the config-sized 0.05.
     assert bot._positions["EURUSD"] == ("buy", 0.02)
+
+
+def test_bot_pending_entry_does_not_register_scale_out() -> None:
+    bridge = FakeBridge(MT5OrderResult(accepted=True, order_id="900", is_pending=True))
+    store = MT5TradeStore(":memory:")
+    bot = _bot(bridge, ScriptedStrategy([Signal("enter_long", order_kind="limit", price=1.2)]), store)
+
+    bot.run_once()
+
+    # A pending entry rests in the pending slot and never enters the managed (scale-out) slot.
+    assert "EURUSD" in bot._pendings
+    assert bot._managed == {}
+
+
+def test_bot_fails_loud_on_pending_entry_carrying_tp1() -> None:
+    bridge = FakeBridge(MT5OrderResult(accepted=True, order_id="900", is_pending=True))
+    store = MT5TradeStore(":memory:")
+    bot = _bot(bridge, ScriptedStrategy([HOLD]), store)
+    # Bypass Signal validation: an intent that illegally carries scale-out metadata on a pending
+    # entry must fail loud (reconcile has no _managed path), not silently drop the plan.
+    intent = OrderIntent(
+        side="buy", volume=0.05, result=("buy", 0.05), reason="open",
+        order_kind="limit", price=1.0, tp1=2.0, tp1_close_fraction=0.5,
+    )
+
+    with pytest.raises(OperationalException, match="not supported for pending"):
+        bot._execute("EURUSD", intent, Signal("enter_long", order_kind="limit", price=1.0), 1.0)

@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar, MT5DataFeed
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
 from freqtrade.mt5_trade.models import (
@@ -331,6 +332,14 @@ class MT5ForexBot:
             return False
 
         if is_open and result.is_pending:
+            # Invariant (enforced at the Signal level): scale-out (tp1) is market-only. A pending
+            # order rests until filled and is adopted via reconcile(), which has no path to
+            # register _managed metadata — so a tp1 here would be silently dropped. Fail loud if
+            # the Signal-level guard ever regresses.
+            if intent.tp1 is not None:
+                raise OperationalException(
+                    f"scale-out (tp1) is not supported for pending entries: {symbol}"
+                )
             # A resting limit/stop order is not a position yet; reconcile() adopts the fill later.
             oid = result.order_id
             ticket = int(oid) if oid is not None and oid.isdigit() else None
