@@ -247,7 +247,10 @@ class MT5ForexBot:
         if sized_signal is None:
             return
         for intent in plan_transitions(current, sized_signal, self._default_volume):
-            self._execute(symbol, intent, signal, reference_price)
+            # If a close/cancel leg fails, abort the rest so a reversal never opens the opposite
+            # side while the old position/pending is still live at the broker.
+            if not self._execute(symbol, intent, signal, reference_price):
+                break
 
     def _size_signal(
         self,
@@ -280,14 +283,18 @@ class MT5ForexBot:
 
     def _execute(
         self, symbol: str, intent: OrderIntent, signal: Signal, reference_price: float
-    ) -> None:
+    ) -> bool:
+        """
+        Execute one transition intent. Returns True when the caller may proceed to the next
+        intent, False when it must abort (a close/cancel leg failed, so opening the opposite
+        side would leave the old position/pending live alongside a new one).
+        """
         is_open = intent.result is not None
 
         # Closing a symbol whose slot is a resting order means cancelling that order, not
         # sending a market close for a position the bot does not hold.
         if not is_open and symbol in self._pendings:
-            self._cancel_pending(symbol)
-            return
+            return self._cancel_pending(symbol)
 
         order = self._build_order(symbol, intent, signal, is_open)
         result = self._bridge.submit_order(order)
@@ -298,7 +305,7 @@ class MT5ForexBot:
                 "%s %s %s rejected: %s", intent.reason, intent.side, symbol, result.message
             )
             self._notify(f"{intent.reason} {intent.side} {symbol} rejected: {result.message}")
-            return
+            return False
 
         if is_open and result.is_pending:
             # A resting limit/stop order is not a position yet; reconcile() adopts the fill later.
@@ -306,7 +313,7 @@ class MT5ForexBot:
             ticket = int(oid) if oid is not None and oid.isdigit() else None
             self._set_pending(symbol, (intent.side, intent.volume, ticket))
             self._notify(f"pending {intent.side} {symbol} {intent.volume} ({result.order_id})")
-            return
+            return True
 
         if is_open:
             # A partial fill means the broker executed less than requested; track what we got.
@@ -325,20 +332,23 @@ class MT5ForexBot:
         self._notify(
             f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"
         )
+        return True
 
-    def _cancel_pending(self, symbol: str, reason: str = "cancelled") -> None:
+    def _cancel_pending(self, symbol: str, reason: str = "cancelled") -> bool:
+        """Cancel a resting pending order. Returns True if the slot is now clear, else False."""
         side, _volume, ticket = self._pendings[symbol]
         if ticket is None:
             # Nothing to cancel at the broker; just forget the local slot.
             self._clear_pending(symbol)
-            return
+            return True
         result = self._bridge.cancel_order(ticket)
         if result.accepted:
             self._clear_pending(symbol)
             self._notify(f"{reason} pending {side} {symbol} ({ticket})")
-        else:
-            logger.warning("Cancel pending %s (%s) rejected: %s", symbol, ticket, result.message)
-            self._notify(f"cancel pending {symbol} rejected: {result.message}")
+            return True
+        logger.warning("Cancel pending %s (%s) rejected: %s", symbol, ticket, result.message)
+        self._notify(f"cancel pending {symbol} rejected: {result.message}")
+        return False
 
     def _apply_sltp(self, symbol: str, signal: Signal) -> None:
         if signal.stop_loss is None and signal.take_profit is None:
