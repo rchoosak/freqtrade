@@ -295,7 +295,7 @@ class MT5ForexBot:
             side=side,
             entry_price=entry_price,
             stop_loss=signal.stop_loss,
-            balance=self._account_balance,
+            balance=self._current_balance(),
             mapping=self._symbol_mappings.get(symbol),
         )
         if decision.skipped:
@@ -304,6 +304,16 @@ class MT5ForexBot:
             self._notify(message)
             return None
         return replace(signal, volume=decision.volume)
+
+    def _current_balance(self) -> float | None:
+        # For risk-percent sizing, prefer the broker's live balance so sizing compounds with
+        # realized PnL (the configured starting balance is only a startup fallback). Dry-run and
+        # fixed sizing have no broker balance, so the configured value is used.
+        if self._position_sizer.requires_balance:
+            broker_balance = self._bridge.account_balance()
+            if broker_balance is not None:
+                return broker_balance
+        return self._account_balance
 
     def _execute(
         self, symbol: str, intent: OrderIntent, signal: Signal, reference_price: float

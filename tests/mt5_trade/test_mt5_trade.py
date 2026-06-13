@@ -615,3 +615,21 @@ def test_gateway_order_send_rejects_on_broker_normalization_error(
 
     assert result.accepted is False
     assert "below minimum" in result.message
+
+
+class AccountMT5(FakeMT5):
+    def account_info(self):
+        return SimpleNamespace(balance=1234.5)
+
+
+def test_gateway_account_balance(bridge_config: MT5BridgeConfig) -> None:
+    live_config = MT5BridgeConfig(symbols=bridge_config.symbols, dry_run=False)
+    gateway = LazyMT5Gateway(live_config, mt5_module=AccountMT5())
+
+    assert gateway.account_balance() == 1234.5
+
+
+def test_bridge_account_balance_is_none_in_dry_run(bridge_config: MT5BridgeConfig) -> None:
+    bridge = MT5ExecutionBridge(bridge_config)  # dry_run=True
+
+    assert bridge.account_balance() is None

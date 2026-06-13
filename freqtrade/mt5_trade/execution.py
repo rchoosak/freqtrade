@@ -77,6 +77,12 @@ class MT5ExecutionBridge:
             return None
         return self._gateway.open_positions()
 
+    def account_balance(self) -> float | None:
+        """Live account balance, or None in dry-run (no broker)."""
+        if self._config.dry_run:
+            return None
+        return self._gateway.account_balance()
+
     def broker_orders(self) -> list[BrokerOrder] | None:
         """Resting pending orders from the broker, or None in dry-run (nothing to reconcile)."""
         if self._config.dry_run:

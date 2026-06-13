@@ -168,6 +168,12 @@ class LazyMT5Gateway:
             raw=response,
         )
 
+    def account_balance(self) -> float | None:
+        """Current account balance from the terminal (for risk-percent sizing that compounds)."""
+        self.ensure_connected()
+        info = self.mt5.account_info()
+        return _optional_float(getattr(info, "balance", None)) if info is not None else None
+
     def open_positions(self) -> list[BrokerPosition]:
         """Return the broker's currently open positions (used for reconciliation)."""
         self.ensure_connected()
