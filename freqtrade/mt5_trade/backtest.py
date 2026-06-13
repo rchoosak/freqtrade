@@ -87,6 +87,7 @@ class _Pending:
     tp1: float | None = None
     tp1_close_fraction: float | None = None
     move_be: bool = False
+    expiration: int | None = None
 
 
 def _pnl_for(side: OrderSide, entry_price: float, exit_price: float, volume: float) -> float:
@@ -156,6 +157,15 @@ def run_backtest(
         position = positions.get(symbol)
         pending = pendings.get(symbol)
         mapping = symbol_mappings.get(symbol) if symbol_mappings is not None else None
+
+        # A pending order auto-cancels at its expiry (the broker does this live), so drop it
+        # before testing for a fill once the bar has reached the expiration time.
+        if (
+            pending is not None
+            and pending.expiration is not None
+            and bar.time >= pending.expiration
+        ):
+            pending = None
 
         if pending is not None and _is_filled(pending, bar):
             position = _open_from_pending(pending, bar.time)
@@ -425,6 +435,7 @@ def _pending_from_intent(intent) -> _Pending:
         intent.tp1,
         intent.tp1_close_fraction,
         intent.move_sl_to_breakeven,
+        intent.expiration,
     )
 
 

@@ -381,3 +381,24 @@ def test_backtest_pending_fill_resolves_sl_on_same_bar() -> None:
     assert result.trades[0].entry_price == 8
     assert result.trades[0].exit_price == 7   # stopped on the fill bar (not the bar close 7.5)
     assert result.trades[0].exit_time == 1
+
+
+def test_backtest_expired_pending_does_not_fill() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long", order_kind="limit", price=8, expiration=30)])
+    # The touch happens at t=60, past the order's expiry (30), so it must not fill.
+    data = {"EURUSD": [MT5Bar(0, 10, 10, 10, 10), MT5Bar(60, 9, 9, 7, 8)]}
+
+    result = run_backtest(strategy, data, default_volume=1.0, warmup_bars=10)
+
+    assert result.num_trades == 0
+
+
+def test_backtest_pending_fills_before_expiry() -> None:
+    strategy = ScriptedStrategy([Signal("enter_long", order_kind="limit", price=8, expiration=100)])
+    # The touch at t=60 is before the order's expiry (100), so it fills normally.
+    data = {"EURUSD": [MT5Bar(0, 10, 10, 10, 10), MT5Bar(60, 9, 9, 7, 8)]}
+
+    result = run_backtest(strategy, data, default_volume=1.0, warmup_bars=10)
+
+    assert result.num_trades == 1
+    assert result.trades[0].entry_price == 8
