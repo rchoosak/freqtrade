@@ -378,7 +378,7 @@ class M5TrendM1EntryStrategy(MT5Strategy):
 
     def _stop_loss(self, side: str, m1_bars: list[MT5Bar], m5_bars: list[MT5Bar]) -> float:
         if self.stop_mode == "m5_previous":
-            reference = m5_bars[-1]
+            reference = self._previous_m5(m1_bars, m5_bars)
             return (
                 reference.low - self.stop_buffer
                 if side == "buy"
@@ -391,6 +391,16 @@ class M5TrendM1EntryStrategy(MT5Strategy):
             if side == "buy"
             else max(bar.high for bar in window) + self.stop_buffer
         )
+
+    def _previous_m5(self, m1_bars: list[MT5Bar], m5_bars: list[MT5Bar]) -> MT5Bar:
+        # The "previous M5 candle" is the completed bucket before the one holding the entry M1
+        # bar. When the trigger fires on the 5th M1 minute, that bucket is already complete and is
+        # m5_bars[-1] (the entry's own candle), so step back to m5_bars[-2]. When the trigger
+        # fires mid-bucket, m5_bars[-1] is already the prior completed candle.
+        current_bucket = m1_bars[-1].time - (m1_bars[-1].time % 300)
+        if m5_bars[-1].time == current_bucket and len(m5_bars) >= 2:
+            return m5_bars[-2]
+        return m5_bars[-1]
 
     def _take_profit(self, side: str, entry_price: float, stop_loss: float) -> float | None:
         if self.take_profit_mode == "none":

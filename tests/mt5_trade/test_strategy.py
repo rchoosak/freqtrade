@@ -179,3 +179,44 @@ def test_m5_trend_m1_entry_resets_state_on_position_closed() -> None:
     # ...so the trend-invalidation no longer emits a stale exit for a position that is gone
     # (contrast test_m5_trend_m1_entry_exits_when_m5_trend_invalidates, which sees "exit").
     assert strategy.on_bar("XAUUSD", neutral_bars).action != "exit"
+
+
+def _m5_previous_strategy() -> M5TrendM1EntryStrategy:
+    return M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        stoch_rsi_length=3,
+        stoch_k_smooth=1,
+        stoch_d_smooth=2,
+        stop_mode="m5_previous",
+        stop_buffer=0.5,
+        use_session_filter=False,
+    )
+
+
+def _m5(time: int, low: float, high: float) -> MT5Bar:
+    return MT5Bar(time=time, open=low, high=high, low=low, close=low)
+
+
+def test_m5_previous_stop_steps_back_when_trigger_on_fifth_minute() -> None:
+    strategy = _m5_previous_strategy()
+    m5_bars = [_m5(0, 10, 11), _m5(300, 20, 21), _m5(600, 30, 31)]
+    # Entry M1 bar at the 5th minute (offset 240) of bucket 600 -> that bucket is m5_bars[-1]
+    # (the entry's own candle), so the "previous M5 candle" is m5_bars[-2] (bucket 300).
+    m1_bars = [MT5Bar(time=840, open=30, high=31, low=30, close=30)]
+
+    assert strategy._stop_loss("buy", m1_bars, m5_bars) == 20 - 0.5
+    assert strategy._stop_loss("sell", m1_bars, m5_bars) == 21 + 0.5
+
+
+def test_m5_previous_stop_uses_last_completed_bucket_mid_bucket() -> None:
+    strategy = _m5_previous_strategy()
+    m5_bars = [_m5(0, 10, 11), _m5(300, 20, 21), _m5(600, 30, 31)]
+    # Entry M1 bar at the 2nd minute (offset 60) of the in-progress bucket 900 (not in m5_bars),
+    # so m5_bars[-1] (bucket 600) is already the previous completed M5 candle.
+    m1_bars = [MT5Bar(time=960, open=30, high=31, low=30, close=30)]
+
+    assert strategy._stop_loss("buy", m1_bars, m5_bars) == 30 - 0.5
+    assert strategy._stop_loss("sell", m1_bars, m5_bars) == 31 + 0.5
