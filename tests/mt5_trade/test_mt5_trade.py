@@ -441,6 +441,40 @@ def test_gateway_modify_position_sltp_sends_sltp_action() -> None:
     assert fake.request["tp"] == 1.10
 
 
+def test_gateway_modify_position_sltp_uses_explicit_position_ticket() -> None:
+    fake = FakeMT5()
+    fake.positions = [
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.POSITION_TYPE_BUY, volume=0.10,
+                        price_open=1.08, ticket=42),
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.POSITION_TYPE_BUY, volume=0.20,
+                        price_open=1.09, ticket=43),
+    ]
+    gateway = _live_gateway(fake)
+
+    result = gateway.modify_position_sltp(
+        "EURUSD", stop_loss=1.07, take_profit=None, position_ticket=43
+    )
+
+    assert result.accepted is True
+    assert fake.request["position"] == 43
+
+
+def test_gateway_modify_sltp_rejects_ambiguous_symbol() -> None:
+    fake = FakeMT5()
+    fake.positions = [
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.POSITION_TYPE_BUY, volume=0.10,
+                        price_open=1.08, ticket=42),
+        SimpleNamespace(symbol="EURUSD", type=FakeMT5.POSITION_TYPE_SELL, volume=0.20,
+                        price_open=1.09, ticket=43),
+    ]
+    gateway = _live_gateway(fake)
+
+    result = gateway.modify_position_sltp("EURUSD", stop_loss=1.07, take_profit=None)
+
+    assert result.accepted is False
+    assert "Multiple open MT5 positions" in result.message
+
+
 def test_gateway_modify_sltp_without_position_is_rejected() -> None:
     gateway = _live_gateway(FakeMT5())
 

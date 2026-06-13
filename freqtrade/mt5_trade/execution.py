@@ -47,7 +47,12 @@ class MT5ExecutionBridge:
         return self._gateway.order_send(order)
 
     def modify_sltp(
-        self, symbol: str, stop_loss: float | None, take_profit: float | None
+        self,
+        symbol: str,
+        stop_loss: float | None,
+        take_profit: float | None,
+        *,
+        position_ticket: int | None = None,
     ) -> MT5OrderResult:
         if self._config.dry_run:
             return MT5OrderResult(
@@ -55,7 +60,9 @@ class MT5ExecutionBridge:
                 order_id=None,
                 message="Dry-run SL/TP modify accepted locally; no MT5 request was sent.",
             )
-        return self._gateway.modify_position_sltp(symbol, stop_loss, take_profit)
+        return self._gateway.modify_position_sltp(
+            symbol, stop_loss, take_profit, position_ticket=position_ticket
+        )
 
     def cancel_order(self, ticket: int) -> MT5OrderResult:
         if self._config.dry_run:

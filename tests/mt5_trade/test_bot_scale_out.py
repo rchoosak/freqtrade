@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from freqtrade.mt5_trade.bot import MT5ForexBot
 from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
-from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderResult, MT5SymbolMapping
+from freqtrade.mt5_trade.models import (
+    BrokerPosition,
+    MT5BotConfig,
+    MT5OrderResult,
+    MT5SymbolMapping,
+)
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal
 
@@ -17,7 +22,7 @@ class FakeBridge:
         self.orders.append(order)
         return MT5OrderResult(accepted=True, order_id="ok")
 
-    def modify_sltp(self, symbol, stop_loss, take_profit):
+    def modify_sltp(self, symbol, stop_loss, take_profit, *, position_ticket=None):
         self.sltp.append((symbol, stop_loss, take_profit))
         return MT5OrderResult(accepted=True, order_id=None)
 
@@ -50,6 +55,12 @@ class BrokerPositionBridge(FakeBridge):
 
     def broker_orders(self):
         return []
+
+
+class SltpTicketBridge(BrokerPositionBridge):
+    def modify_sltp(self, symbol, stop_loss, take_profit, *, position_ticket=None):
+        self.sltp.append((symbol, stop_loss, take_profit, position_ticket))
+        return MT5OrderResult(accepted=True, order_id=None)
 
 
 class ScriptedStrategy(MT5Strategy):
@@ -131,8 +142,6 @@ def test_bot_exit_order_carries_position_ticket() -> None:
 
 
 def test_bot_close_reconciles_to_learn_missing_position_ticket() -> None:
-    from freqtrade.mt5_trade.models import BrokerPosition
-
     bridge = BrokerPositionBridge([BrokerPosition("EURUSD", "buy", 1.0, price=10.0, ticket=77)])
     store = MT5TradeStore(":memory:")
     store.open_position("EURUSD", "buy", 1.0, 10.0)
@@ -141,6 +150,31 @@ def test_bot_close_reconciles_to_learn_missing_position_ticket() -> None:
     bot.run_once()
 
     assert bridge.orders[0].position_ticket == 77
+
+
+def test_bot_close_aborts_when_ticket_refresh_changes_position() -> None:
+    bridge = BrokerPositionBridge([BrokerPosition("EURUSD", "sell", 0.5, price=11.0, ticket=77)])
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 1.0, 10.0)
+    bot = _bot(bridge, ScriptedStrategy([Signal("exit")]), store, default_volume=1.0)
+
+    bot.run_once()
+
+    assert bridge.orders == []
+    position = store.open_positions()["EURUSD"]
+    assert position.side == "sell"
+    assert position.volume == 0.5
+
+
+def test_bot_sltp_uses_reconciled_position_ticket() -> None:
+    bridge = SltpTicketBridge([BrokerPosition("EURUSD", "buy", 1.0, price=10.0, ticket=77)])
+    store = MT5TradeStore(":memory:")
+    signal = Signal("enter_long", stop_loss=9.0, take_profit=12.0)
+    bot = _bot(bridge, ScriptedStrategy([signal]), store, default_volume=1.0)
+
+    bot.run_once()
+
+    assert bridge.sltp == [("EURUSD", 9.0, 12.0, 77)]
 
 
 def test_bot_scale_out_skipped_when_position_too_small_to_split() -> None:
@@ -231,7 +265,7 @@ class PartialFillBridge:
             return MT5OrderResult(accepted=True, order_id="ok", filled_volume=self._tp1_filled)
         return MT5OrderResult(accepted=True, order_id="ok")
 
-    def modify_sltp(self, symbol, stop_loss, take_profit):
+    def modify_sltp(self, symbol, stop_loss, take_profit, *, position_ticket=None):
         self.sltp.append((symbol, stop_loss, take_profit))
         return MT5OrderResult(accepted=True, order_id=None)
 
@@ -323,7 +357,7 @@ class FillPriceBridge:
             return MT5OrderResult(accepted=True, order_id="c")
         return MT5OrderResult(accepted=True, order_id="e", fill_price=self._entry_fill_price)
 
-    def modify_sltp(self, symbol, stop_loss, take_profit):
+    def modify_sltp(self, symbol, stop_loss, take_profit, *, position_ticket=None):
         self.sltp.append((symbol, stop_loss, take_profit))
         return MT5OrderResult(accepted=True, order_id=None)
 

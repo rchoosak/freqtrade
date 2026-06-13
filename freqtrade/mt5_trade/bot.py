@@ -67,6 +67,10 @@ def _same_price(left: float | None, right: float | None) -> bool:
     return abs(left - right) <= max(1e-9, abs(left) * 1e-9)
 
 
+def _same_volume(left: float, right: float) -> bool:
+    return abs(left - right) <= max(1e-9, abs(left) * 1e-9)
+
+
 def _position_identity_changed(
     old: tuple[float | None, int | None] | None,
     new: tuple[float | None, int | None],
@@ -103,6 +107,10 @@ def _unique_by_symbol(items: Iterable[Any], label: str) -> dict[str, Any]:
             f"{label[:-1]} per symbol; resolve the broker state manually before continuing."
         )
     return unique
+
+
+def _open_side_for_close(close_side: OrderSide) -> OrderSide:
+    return "buy" if close_side == "sell" else "sell"
 
 
 class MT5ForexBot:
@@ -213,10 +221,10 @@ class MT5ForexBot:
         """
         self._running = True
         self._notify(f"MT5 forex bot started (symbols={list(self._config.symbols)}).")
-        self.reconcile()
         iteration = 0
         consecutive_errors = 0
         try:
+            self.reconcile()
             while self._running:
                 iteration += 1
                 try:
@@ -432,6 +440,14 @@ class MT5ForexBot:
             ticket_ok, position_ticket = self._resolve_position_ticket(symbol, intent.reason)
             if not ticket_ok:
                 return False
+            if not self._close_intent_matches_current_position(symbol, intent):
+                message = (
+                    f"{intent.reason} {symbol} skipped: broker position changed during "
+                    "ticket refresh; will re-plan on the next bar."
+                )
+                logger.warning(message)
+                self._notify(message)
+                return False
 
         order = self._build_order(
             symbol, intent, signal, is_open, position_ticket=position_ticket
@@ -471,7 +487,13 @@ class MT5ForexBot:
             self._positions[symbol] = (intent.side, volume)
             self._position_ids[symbol] = (entry_price, None)
             self._store.open_position(symbol, intent.side, volume, entry_price, ticket=None)
-            self._apply_sltp(symbol, signal)
+            ticket_ok = True
+            position_ticket = None
+            if signal.stop_loss is not None or signal.take_profit is not None:
+                ticket_ok, position_ticket = self._resolve_position_ticket(symbol, "SL/TP")
+            if ticket_ok:
+                entry_price = self._position_ids.get(symbol, (entry_price, None))[0] or entry_price
+                self._apply_sltp(symbol, signal, position_ticket=position_ticket)
             self._register_scale_out(symbol, intent, entry_price)
         else:
             self._positions.pop(symbol, None)
@@ -484,6 +506,14 @@ class MT5ForexBot:
             f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"
         )
         return True
+
+    def _close_intent_matches_current_position(self, symbol: str, intent: OrderIntent) -> bool:
+        position = self._positions.get(symbol)
+        if position is None:
+            return False
+        expected_side = _open_side_for_close(intent.side)
+        side, volume = position
+        return side == expected_side and _same_volume(volume, intent.volume)
 
     def _resolve_position_ticket(
         self, symbol: str, reason: str
@@ -520,13 +550,35 @@ class MT5ForexBot:
         self._notify(f"cancel pending {symbol} rejected: {result.message}")
         return False
 
-    def _apply_sltp(self, symbol: str, signal: Signal) -> None:
+    def _apply_sltp(
+        self,
+        symbol: str,
+        signal: Signal,
+        *,
+        position_ticket: int | None = None,
+    ) -> None:
         if signal.stop_loss is None and signal.take_profit is None:
             return
-        result = self._bridge.modify_sltp(symbol, signal.stop_loss, signal.take_profit)
+        result = self._modify_sltp(
+            symbol, signal.stop_loss, signal.take_profit, position_ticket=position_ticket
+        )
         if not result.accepted:
             logger.warning("SL/TP modify for %s rejected: %s", symbol, result.message)
             self._notify(f"SL/TP {symbol} rejected: {result.message}")
+
+    def _modify_sltp(
+        self,
+        symbol: str,
+        stop_loss: float | None,
+        take_profit: float | None,
+        *,
+        position_ticket: int | None = None,
+    ) -> MT5OrderResult:
+        if position_ticket is None:
+            return self._bridge.modify_sltp(symbol, stop_loss, take_profit)
+        return self._bridge.modify_sltp(
+            symbol, stop_loss, take_profit, position_ticket=position_ticket
+        )
 
     def _register_scale_out(
         self, symbol: str, intent: OrderIntent, entry_price: float
@@ -634,7 +686,9 @@ class MT5ForexBot:
         managed.scaled = True
         self._persist_managed(symbol, managed)
         if managed.move_be:
-            be = self._bridge.modify_sltp(symbol, managed.entry_price, None)
+            be = self._modify_sltp(
+                symbol, managed.entry_price, None, position_ticket=position_ticket
+            )
             if not be.accepted:
                 logger.warning("Breakeven SL move for %s rejected: %s", symbol, be.message)
         self._notify(f"scaled out {symbol} {closed} @ {managed.tp1}; runner {remaining}")

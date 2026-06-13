@@ -93,6 +93,23 @@ def test_reconcile_rejects_duplicate_broker_positions_for_symbol() -> None:
         bot.reconcile()
 
 
+def test_run_closes_bridge_when_startup_reconcile_fails() -> None:
+    store = MT5TradeStore(":memory:")
+    bridge = FakeBridge(
+        [
+            BrokerPosition("EURUSD", "buy", 0.10, price=1.08, ticket=1),
+            BrokerPosition("EURUSD", "sell", 0.10, price=1.09, ticket=2),
+        ],
+        [],
+    )
+    bot = _bot(bridge, store)
+
+    with pytest.raises(OperationalException, match="Multiple broker positions"):
+        bot.run(sleep=lambda _seconds: None)
+
+    assert bridge.closed is True
+
+
 def test_reconcile_drops_externally_closed_position() -> None:
     store = MT5TradeStore(":memory:")
     store.open_position("EURUSD", "buy", 0.10, 1.10)

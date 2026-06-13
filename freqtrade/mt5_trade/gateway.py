@@ -224,22 +224,44 @@ class LazyMT5Gateway:
         return orders
 
     def modify_position_sltp(
-        self, symbol: str, stop_loss: float | None, take_profit: float | None
+        self,
+        symbol: str,
+        stop_loss: float | None,
+        take_profit: float | None,
+        *,
+        position_ticket: int | None = None,
     ) -> MT5OrderResult:
         """Set/clear the broker-side stop-loss and take-profit on an open position."""
         mapping = self._config.mapping_for(symbol)
         self.ensure_connected()
-        position = self._find_position(mapping.mt5_symbol)
-        if position is None:
+        if position_ticket is None:
+            positions = self._matching_positions(mapping.mt5_symbol)
+            if not positions:
+                return MT5OrderResult(
+                    accepted=False,
+                    order_id=None,
+                    message=f"No open MT5 position for {mapping.mt5_symbol} to modify.",
+                )
+            if len(positions) > 1:
+                return MT5OrderResult(
+                    accepted=False,
+                    order_id=None,
+                    message=(
+                        f"Multiple open MT5 positions for {mapping.mt5_symbol}; "
+                        "position_ticket is required for SL/TP."
+                    ),
+                )
+            position_ticket = positions[0].ticket
+        if position_ticket is None:
             return MT5OrderResult(
                 accepted=False,
                 order_id=None,
-                message=f"No open MT5 position for {mapping.mt5_symbol} to modify.",
+                message=f"Open MT5 position for {mapping.mt5_symbol} has no ticket.",
             )
         request: dict[str, Any] = {
             "action": getattr(self.mt5, "TRADE_ACTION_SLTP", 6),
             "symbol": mapping.mt5_symbol,
-            "position": position.ticket,
+            "position": position_ticket,
             "sl": round(stop_loss, mapping.price_precision) if stop_loss is not None else 0.0,
             "tp": round(take_profit, mapping.price_precision) if take_profit is not None else 0.0,
         }
@@ -253,11 +275,8 @@ class LazyMT5Gateway:
         }
         return self._dispatch(request, description=f"cancel_order {ticket}")
 
-    def _find_position(self, mt5_symbol: str) -> BrokerPosition | None:
-        for position in self.open_positions():
-            if position.symbol == mt5_symbol:
-                return position
-        return None
+    def _matching_positions(self, mt5_symbol: str) -> list[BrokerPosition]:
+        return [position for position in self.open_positions() if position.symbol == mt5_symbol]
 
     def build_order_send_request(self, order: MT5OrderRequest) -> dict[str, Any]:
         mapping = self._config.mapping_for(order.symbol)
