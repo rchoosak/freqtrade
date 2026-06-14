@@ -30,6 +30,7 @@ MT5_CONFIG_SCHEMA: dict[str, Any] = {
         "warmup_bars": {"type": "integer", "minimum": 1},
         "reconcile_interval": {"type": "integer", "minimum": 0},
         "pending_expiry": {"type": "integer", "minimum": 0},
+        "max_spread_points": {"type": "integer", "minimum": 0},
         "db_path": {"type": "string"},
         "trade_symbols": {"type": "array", "items": {"type": "string"}},
         "position_sizing": {

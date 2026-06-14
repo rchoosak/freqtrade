@@ -174,6 +174,15 @@ class LazyMT5Gateway:
         info = self.mt5.account_info()
         return _optional_float(getattr(info, "balance", None)) if info is not None else None
 
+    def symbol_spread_points(self, symbol: str) -> int | None:
+        """Current spread (in points) for ``symbol`` from the terminal, or None if unavailable."""
+        self.ensure_connected()
+        info = self.mt5.symbol_info(symbol)
+        if info is None:
+            return None
+        spread = getattr(info, "spread", None)
+        return int(spread) if spread is not None else None
+
     def open_positions(self) -> list[BrokerPosition]:
         """Return the broker's currently open positions (used for reconciliation)."""
         self.ensure_connected()

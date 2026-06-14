@@ -428,6 +428,21 @@ class MT5ForexBot:
                 return broker_balance
         return self._account_balance
 
+    def _entry_spread_ok(self, symbol: str) -> bool:
+        # Live-only spread gate: skip new entries when the broker spread exceeds the configured
+        # cap (0 = disabled). M1 bars carry no spread, so this never affects backtests, and the
+        # bridge returns None in dry-run.
+        limit = self._config.max_spread_points
+        if limit <= 0:
+            return True
+        spread = self._bridge.current_spread_points(symbol)
+        if spread is not None and spread > limit:
+            message = f"{symbol} entry skipped: spread {spread} > max {limit} points."
+            logger.info(message)
+            self._notify(message)
+            return False
+        return True
+
     def _execute(
         self, symbol: str, intent: OrderIntent, signal: Signal, reference_price: float
     ) -> bool:
@@ -456,6 +471,9 @@ class MT5ForexBot:
                 logger.warning(message)
                 self._notify(message)
                 return False
+
+        if is_open and not self._entry_spread_ok(symbol):
+            return False
 
         order = self._build_order(
             symbol, intent, signal, is_open, position_ticket=position_ticket

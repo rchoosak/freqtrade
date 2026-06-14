@@ -128,6 +128,9 @@ class MT5BotConfig:
     # Iterations a resting pending order may live before the bot cancels it (0 = never).
     pending_expiry: int = 0
     symbols: tuple[str, ...] = ()
+    # Live-only: skip a new entry when the broker spread exceeds this many points (0 = disabled).
+    # M1 bars carry no spread, so this never affects backtests.
+    max_spread_points: int = 0
 
     def __post_init__(self) -> None:
         if self.poll_interval <= 0:
@@ -140,6 +143,10 @@ class MT5BotConfig:
             )
         if self.pending_expiry < 0:
             raise ValueError(f"Invalid pending_expiry {self.pending_expiry!r}. Expected >= 0.")
+        if self.max_spread_points < 0:
+            raise ValueError(
+                f"Invalid max_spread_points {self.max_spread_points!r}. Expected >= 0."
+            )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MT5BotConfig:
@@ -151,6 +158,7 @@ class MT5BotConfig:
             reconcile_interval=int(data.get("reconcile_interval", 0)),
             pending_expiry=int(data.get("pending_expiry", 0)),
             symbols=tuple(str(s) for s in data.get("symbols", ())),
+            max_spread_points=int(data.get("max_spread_points", 0)),
         )
 
 

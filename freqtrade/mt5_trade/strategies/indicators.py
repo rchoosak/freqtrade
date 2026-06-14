@@ -34,6 +34,30 @@ def _aggregate_m1_to_m5(bars: list[MT5Bar]) -> list[MT5Bar]:
     return aggregated
 
 
+def _atr_series(bars: list[MT5Bar], length: int) -> list[float | None]:
+    # Wilder's ATR. True range uses the previous bar's close, so result[i] is None until
+    # there are `length` completed true-range values (i.e. from index `length` onward).
+    result: list[float | None] = [None] * len(bars)
+    if len(bars) <= length:
+        return result
+
+    true_ranges: list[float] = []
+    for index in range(1, len(bars)):
+        high = bars[index].high
+        low = bars[index].low
+        prev_close = bars[index - 1].close
+        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+
+    # true_ranges[j] is the TR of bars[j + 1]; the first ATR (at bar index `length`) is the
+    # simple mean of the first `length` true ranges, then smoothed Wilder-style after that.
+    atr = sum(true_ranges[:length]) / length
+    result[length] = atr
+    for index in range(length + 1, len(bars)):
+        atr = (atr * (length - 1) + true_ranges[index - 1]) / length
+        result[index] = atr
+    return result
+
+
 def _ema_series(values: list[float], length: int) -> list[float]:
     alpha = 2 / (length + 1)
     ema = values[0]

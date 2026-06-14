@@ -90,6 +90,12 @@ class MT5ExecutionBridge:
             return None
         return self._gateway.account_balance()
 
+    def current_spread_points(self, symbol: str) -> int | None:
+        """Live spread in points for ``symbol``, or None in dry-run / when unavailable."""
+        if self._config.dry_run:
+            return None
+        return self._gateway.symbol_spread_points(symbol)
+
     def broker_orders(self) -> list[BrokerOrder] | None:
         """Resting pending orders from the broker, or None in dry-run (nothing to reconcile)."""
         if self._config.dry_run:
