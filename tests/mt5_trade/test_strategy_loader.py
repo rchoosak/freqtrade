@@ -4,7 +4,7 @@ import pytest
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.runner import build_default_strategy
-from freqtrade.mt5_trade.strategy import MT5Strategy, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import MT5Strategy, SmaCrossStrategy
 
 
 def test_build_strategy_defaults_to_sma_without_class() -> None:
@@ -19,7 +19,7 @@ def test_build_strategy_loads_class_from_dotted_path() -> None:
     strategy = build_default_strategy(
         {
             "strategy": {
-                "class": "freqtrade.mt5_trade.strategy.SmaCrossStrategy",
+                "class": "freqtrade.mt5_trade.strategies.SmaCrossStrategy",
                 "fast": 4,
                 "slow": 9,
             }
@@ -34,7 +34,7 @@ def test_build_strategy_loads_class_from_dotted_path() -> None:
 def test_build_strategy_loads_from_path(tmp_path) -> None:
     module_file = tmp_path / "mystrat.py"
     module_file.write_text(
-        "from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy\n"
+        "from freqtrade.mt5_trade.strategies import HOLD, MT5Strategy\n"
         "\n"
         "class MyStrat(MT5Strategy):\n"
         "    def __init__(self, threshold=1.0):\n"
@@ -65,7 +65,7 @@ def test_build_strategy_rejects_missing_module() -> None:
 def test_build_strategy_rejects_missing_class() -> None:
     with pytest.raises(OperationalException, match="not found in module"):
         build_default_strategy(
-            {"strategy": {"class": "freqtrade.mt5_trade.strategy.NopeStrategy"}}
+            {"strategy": {"class": "freqtrade.mt5_trade.strategies.NopeStrategy"}}
         )
 
 
@@ -79,7 +79,7 @@ def test_build_strategy_reports_constructor_errors() -> None:
         build_default_strategy(
             {
                 "strategy": {
-                    "class": "freqtrade.mt5_trade.strategy.SmaCrossStrategy",
+                    "class": "freqtrade.mt5_trade.strategies.SmaCrossStrategy",
                     "unknown_param": 5,
                 }
             }

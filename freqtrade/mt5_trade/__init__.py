@@ -47,7 +47,7 @@ from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
 from freqtrade.mt5_trade.runner import MT5TradeRuntime
 from freqtrade.mt5_trade.sizing import PositionSizer, SizingDecision
-from freqtrade.mt5_trade.strategy import (
+from freqtrade.mt5_trade.strategies import (
     M5TrendM1EntryStrategy,
     MT5Strategy,
     Signal,

@@ -5,7 +5,7 @@ from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
 from freqtrade.mt5_trade.models import MT5BotConfig, MT5BridgeConfig, MT5SymbolMapping
 from freqtrade.mt5_trade.persistence import MT5TradeStore
-from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import HOLD, MT5Strategy, Signal, SmaCrossStrategy
 
 
 class ScriptedStrategy(MT5Strategy):

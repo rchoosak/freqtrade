@@ -8,7 +8,7 @@ from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderResult
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent
-from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal
+from freqtrade.mt5_trade.strategies import HOLD, MT5Strategy, Signal
 
 
 class FakeBridge:

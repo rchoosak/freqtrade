@@ -16,7 +16,7 @@ from freqtrade.mt5_trade.models import MT5BotConfig, MT5BridgeConfig
 from freqtrade.mt5_trade.notifier import Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.sizing import PositionSizer
-from freqtrade.mt5_trade.strategy import MT5Strategy, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import MT5Strategy, SmaCrossStrategy
 
 
 logger = logging.getLogger(__name__)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from freqtrade.mt5_trade.models import OrderKind, OrderSide
-from freqtrade.mt5_trade.strategy import Signal
+from freqtrade.mt5_trade.strategies import Signal
 
 
 # Action -> the market order side that opens that position.

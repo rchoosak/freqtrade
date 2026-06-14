@@ -7,7 +7,7 @@ from freqtrade.mt5_trade.data import MT5Bar
 from freqtrade.mt5_trade.models import MT5SymbolMapping, OrderKind, OrderSide, split_lot
 from freqtrade.mt5_trade.position import plan_transitions
 from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
-from freqtrade.mt5_trade.strategy import MT5Strategy, Signal
+from freqtrade.mt5_trade.strategies import MT5Strategy, Signal
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from freqtrade.mt5_trade.data import MT5Bar
-from freqtrade.mt5_trade.strategy import M5TrendM1EntryStrategy, Signal, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import M5TrendM1EntryStrategy, Signal, SmaCrossStrategy
 
 
 def _bars(closes: list[float]) -> list[MT5Bar]:

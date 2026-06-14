@@ -21,7 +21,7 @@ from freqtrade.mt5_trade.notifier import LoggingNotifier, Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
 from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
-from freqtrade.mt5_trade.strategy import MT5Strategy, Signal
+from freqtrade.mt5_trade.strategies import MT5Strategy, Signal
 
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ from freqtrade.mt5_trade.backtest import run_backtest
 from freqtrade.mt5_trade.data import MT5Bar
 from freqtrade.mt5_trade.models import MT5SymbolMapping
 from freqtrade.mt5_trade.sizing import PositionSizer
-from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy, Signal, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import HOLD, MT5Strategy, Signal, SmaCrossStrategy
 
 
 class ScriptedStrategy(MT5Strategy):

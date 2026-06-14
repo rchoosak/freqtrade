@@ -12,7 +12,7 @@ from freqtrade.mt5_trade.models import (
     MT5OrderResult,
 )
 from freqtrade.mt5_trade.persistence import MT5TradeStore
-from freqtrade.mt5_trade.strategy import HOLD, MT5Strategy
+from freqtrade.mt5_trade.strategies import HOLD, MT5Strategy
 
 
 class _NoSignalStrategy(MT5Strategy):
