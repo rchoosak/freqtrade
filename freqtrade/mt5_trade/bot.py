@@ -224,6 +224,11 @@ class MT5ForexBot:
         for symbol in self._config.symbols:
             bars = self._feed.latest_bars(symbol, self._config.warmup_bars)
             validate_strategy_bars(self._strategy, symbol, bars)
+            position = self._positions.get(symbol)
+            self._strategy.on_position_state(
+                symbol,
+                position[0] if position is not None else None,
+            )
             # Scale out before asking the strategy, mirroring the backtester's ordering.
             self._manage_scale_out(symbol, bars[-1])
             signal = self._strategy.on_bar(symbol, bars)
@@ -428,10 +433,14 @@ class MT5ForexBot:
         return replace(signal, volume=decision.volume)
 
     def _current_balance(self) -> float | None:
-        # For risk-percent sizing, prefer the broker's live balance so sizing compounds with
-        # realized PnL (the configured starting balance is only a startup fallback). Dry-run and
-        # fixed sizing have no broker balance, so the configured value is used.
+        # Equity includes floating PnL and is safer than balance while other positions are open.
+        # Fall back to live balance, then configured starting balance for dry-run/offline use.
         if self._position_sizer.requires_balance:
+            equity_reader = getattr(self._bridge, "account_equity", None)
+            if equity_reader is not None:
+                broker_equity = equity_reader()
+                if broker_equity is not None:
+                    return broker_equity
             broker_balance = self._bridge.account_balance()
             if broker_balance is not None:
                 return broker_balance

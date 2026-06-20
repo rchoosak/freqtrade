@@ -174,6 +174,12 @@ class LazyMT5Gateway:
         info = self.mt5.account_info()
         return _optional_float(getattr(info, "balance", None)) if info is not None else None
 
+    def account_equity(self) -> float | None:
+        """Current account equity, including floating PnL, for conservative live risk sizing."""
+        self.ensure_connected()
+        info = self.mt5.account_info()
+        return _optional_float(getattr(info, "equity", None)) if info is not None else None
+
     def symbol_spread_points(self, symbol: str) -> int | None:
         """Current spread (in points) for ``symbol`` from the terminal, or None if unavailable."""
         self.ensure_connected()

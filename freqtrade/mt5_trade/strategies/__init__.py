@@ -11,6 +11,7 @@ from freqtrade.mt5_trade.strategies.base import (
 from freqtrade.mt5_trade.strategies.m5_trend_m1_entry import M5TrendM1EntryStrategy
 from freqtrade.mt5_trade.strategies.sma_cross import SmaCrossStrategy
 from freqtrade.mt5_trade.strategies.smc_order_block import SmcOrderBlockStrategy
+from freqtrade.mt5_trade.strategies.xauusd_d1_h4_trend import XauusdD1H4TrendStrategy
 
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "SignalAction",
     "SmaCrossStrategy",
     "SmcOrderBlockStrategy",
+    "XauusdD1H4TrendStrategy",
     "validate_strategy_bars",
     "validate_strategy_runtime",
 ]

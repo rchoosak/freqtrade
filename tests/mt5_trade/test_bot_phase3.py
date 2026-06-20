@@ -157,3 +157,37 @@ def test_bot_risk_percent_uses_live_broker_balance() -> None:
     # Sized from the live broker balance 2000 (not the static config 1000):
     # 2000 * 1% / (5 * 100) = 0.04.
     assert bridge.orders[0].volume == 0.04
+
+
+class BrokerEquityBridge(BrokerBalanceBridge):
+    def account_equity(self):
+        return 1200.0
+
+
+def test_bot_risk_percent_prefers_live_equity_over_balance() -> None:
+    bridge = BrokerEquityBridge()
+    store = MT5TradeStore(":memory:")
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=5, poll_interval=1.0)
+    feed = ReplayDataFeed({"EURUSD": [MT5Bar(time=0, open=10, high=10, low=10, close=10)]})
+    strategy = ScriptedStrategy([Signal("enter_long", stop_loss=5.0)])
+    sizer = PositionSizer.from_config(
+        {"position_sizing": {"mode": "risk_percent", "risk_per_trade": 1.0}},
+        default_lot_size=0.05,
+        contract_size=100,
+    )
+    bot = MT5ForexBot(
+        bridge,
+        feed,
+        strategy,
+        store,
+        cfg,
+        default_volume=0.05,
+        position_sizer=sizer,
+        account_balance=1000,
+    )
+
+    bot.run_once()
+
+    # Equity 1200 includes floating losses and is safer than balance 2000:
+    # 1200 * 1% / (5 * 100) = 0.024, floored to 0.02 lot.
+    assert bridge.orders[0].volume == 0.02

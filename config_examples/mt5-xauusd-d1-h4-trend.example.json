@@ -1,0 +1,66 @@
+{
+  "mt5_trade": {
+    "dry_run": true,
+    "timeframe": "H1",
+    "poll_interval": 60,
+    "warmup_bars": 4000,
+    "default_lot_size": 0.01,
+    "starting_balance": 100000,
+    "contract_size": 100,
+    "position_sizing": {
+      "mode": "risk_percent",
+      "risk_per_trade": 0.75,
+      "capital_fraction": 0.9,
+      "max_risk_amount": 750,
+      "max_lot": 0.5,
+      "skip_if_min_lot_exceeds_risk": true
+    },
+    "history_file": "user_data/mt5_data/XAUUSD_H1_2025-01-01_2026-06-01.json",
+    "replay_data": "user_data/mt5_data/XAUUSD_H1_2025-01-01_2026-06-01.json",
+    "trade_symbols": [
+      "XAUUSD"
+    ],
+    "symbols": [
+      {
+        "base": "XAU",
+        "quote": "USD",
+        "mt5_symbol": "XAUUSD",
+        "price_precision": 2,
+        "lot_precision": 2,
+        "min_lot": 0.01,
+        "lot_step": 0.01
+      }
+    ],
+    "strategy": {
+      "class": "freqtrade.mt5_trade.strategies.XauusdD1H4TrendStrategy",
+      "d1_fast": 30,
+      "d1_slow": 150,
+      "d1_slope_lookback": 3,
+      "d1_adx_length": 14,
+      "d1_long_adx_min": 15,
+      "d1_short_adx_min": 20,
+      "d1_exit_ema": 50,
+      "h4_fast": 10,
+      "h4_slow": 30,
+      "breakout_lookback": 15,
+      "atr_length": 14,
+      "initial_stop_atr": 2.5,
+      "max_breakout_atr": 2.5,
+      "chandelier_lookback": 22,
+      "chandelier_atr": 3,
+      "allow_short": true,
+      "daily_anchor_hour": 0
+    },
+    "data_source": {
+      "type": "dukascopy",
+      "from": "2025-01-01T00:00:00Z",
+      "to": "2026-06-01T00:00:00Z",
+      "timeframe": "H1",
+      "price": "bid",
+      "price_scale": 1000,
+      "instruments": {
+        "XAUUSD": "XAUUSD"
+      }
+    }
+  }
+}

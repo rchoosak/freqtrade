@@ -41,6 +41,17 @@ MT5_CONFIG_SCHEMA: dict[str, Any] = {
                 "fixed_lot_size": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
                 "risk_per_trade": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
                 "risk_percent": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
+                "capital_fraction": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": True,
+                    "maximum": 1,
+                },
+                "max_risk_amount": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": True,
+                },
                 "contract_size": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
                 "min_lot": {"type": "number", "minimum": 0, "exclusiveMinimum": True},
                 "lot_step": {"type": "number", "minimum": 0, "exclusiveMinimum": True},

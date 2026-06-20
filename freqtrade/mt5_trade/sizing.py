@@ -26,6 +26,8 @@ class PositionSizer:
     mode: PositionSizingMode = "fixed"
     fixed_lot_size: float = 0.01
     risk_per_trade: float = 1.0
+    capital_fraction: float = 1.0
+    max_risk_amount: float | None = None
     contract_size: float = 1.0
     min_lot: float | None = None
     lot_step: float | None = None
@@ -53,11 +55,14 @@ class PositionSizer:
         )
         sizing_contract_size = _as_float(raw.get("contract_size", contract_size), contract_size)
         risk_per_trade = _as_float(raw.get("risk_per_trade", raw.get("risk_percent", 1.0)), 1.0)
+        capital_fraction = _as_float(raw.get("capital_fraction", 1.0), 1.0)
 
         sizer = cls(
             mode=mode,  # type: ignore[arg-type]
             fixed_lot_size=fixed_lot_size,
             risk_per_trade=risk_per_trade,
+            capital_fraction=capital_fraction,
+            max_risk_amount=_optional_float(raw.get("max_risk_amount")),
             contract_size=sizing_contract_size,
             min_lot=_optional_float(raw.get("min_lot")),
             lot_step=_optional_float(raw.get("lot_step")),
@@ -74,6 +79,10 @@ class PositionSizer:
             raise ValueError("position_sizing lot size must be positive.")
         if self.risk_per_trade <= 0:
             raise ValueError("position_sizing.risk_per_trade must be positive.")
+        if not 0 < self.capital_fraction <= 1:
+            raise ValueError("position_sizing.capital_fraction must be > 0 and <= 1.")
+        if self.max_risk_amount is not None and self.max_risk_amount <= 0:
+            raise ValueError("position_sizing.max_risk_amount must be positive.")
         if self.contract_size <= 0:
             raise ValueError("position_sizing.contract_size must be positive.")
         if self.min_lot is not None and self.min_lot <= 0:
@@ -116,7 +125,10 @@ class PositionSizer:
                 f"{symbol}: stop_loss must be beyond entry price for {side} risk sizing.",
             )
 
-        risk_amount = balance * self.risk_per_trade / 100
+        risk_capital = balance * self.capital_fraction
+        risk_amount = risk_capital * self.risk_per_trade / 100
+        if self.max_risk_amount is not None:
+            risk_amount = min(risk_amount, self.max_risk_amount)
         raw_volume = risk_amount / (stop_distance * self.contract_size)
         if raw_volume < min_lot and self.skip_if_min_lot_exceeds_risk:
             actual_risk = min_lot * stop_distance * self.contract_size

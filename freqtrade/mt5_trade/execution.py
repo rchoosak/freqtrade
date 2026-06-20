@@ -90,6 +90,12 @@ class MT5ExecutionBridge:
             return None
         return self._gateway.account_balance()
 
+    def account_equity(self) -> float | None:
+        """Live account equity, or None in dry-run (no broker)."""
+        if self._config.dry_run:
+            return None
+        return self._gateway.account_equity()
+
     def current_spread_points(self, symbol: str) -> int | None:
         """Live spread in points for ``symbol``, or None in dry-run / when unavailable."""
         if self._config.dry_run:

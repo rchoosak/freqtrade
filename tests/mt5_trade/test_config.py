@@ -121,6 +121,28 @@ def test_parse_mt5_config_rejects_unknown_position_sizing_mode() -> None:
         parse_mt5_config(section)
 
 
+def test_parse_mt5_config_rejects_invalid_capital_fraction() -> None:
+    section = _valid_section()
+    section["position_sizing"] = {
+        "mode": "risk_percent",
+        "capital_fraction": 1.1,
+    }
+
+    with pytest.raises(OperationalException, match="capital_fraction"):
+        parse_mt5_config(section)
+
+
+def test_parse_mt5_config_rejects_zero_max_risk_amount() -> None:
+    section = _valid_section()
+    section["position_sizing"] = {
+        "mode": "risk_percent",
+        "max_risk_amount": 0,
+    }
+
+    with pytest.raises(OperationalException, match="max_risk_amount"):
+        parse_mt5_config(section)
+
+
 def test_parse_mt5_config_rejects_negative_pending_expiry() -> None:
     section = _valid_section()
     section["pending_expiry"] = -1

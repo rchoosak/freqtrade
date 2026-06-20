@@ -64,3 +64,70 @@ def test_risk_percent_position_sizer_skips_when_min_lot_exceeds_risk() -> None:
 
     assert decision.skipped is True
     assert "above target" in str(decision.reason)
+
+
+def test_risk_percent_uses_only_configured_capital_fraction() -> None:
+    sizer = PositionSizer.from_config(
+        {
+            "position_sizing": {
+                "mode": "risk_percent",
+                "risk_per_trade": 0.25,
+                "capital_fraction": 0.8,
+            }
+        },
+        default_lot_size=0.01,
+        contract_size=100,
+    )
+
+    decision = sizer.size_entry(
+        symbol="XAUUSD",
+        side="buy",
+        entry_price=4500,
+        stop_loss=4490,
+        balance=100000,
+    )
+
+    # 100,000 * 80% * 0.25% = 200 risk; 200 / (10 * 100) = 0.20 lot.
+    assert decision.volume == 0.2
+
+
+def test_risk_percent_honors_cash_risk_and_lot_caps() -> None:
+    sizer = PositionSizer.from_config(
+        {
+            "position_sizing": {
+                "mode": "risk_percent",
+                "risk_per_trade": 1.0,
+                "max_risk_amount": 150,
+                "max_lot": 0.1,
+            }
+        },
+        default_lot_size=0.01,
+        contract_size=100,
+    )
+
+    decision = sizer.size_entry(
+        symbol="XAUUSD",
+        side="buy",
+        entry_price=4500,
+        stop_loss=4490,
+        balance=100000,
+    )
+
+    # Cash cap would produce 0.15 lot, then the hard lot cap reduces it to 0.10.
+    assert decision.volume == 0.1
+
+
+def test_position_sizer_rejects_invalid_capital_guards() -> None:
+    for config in (
+        {"capital_fraction": 0},
+        {"capital_fraction": 1.1},
+        {"max_risk_amount": 0},
+    ):
+        try:
+            PositionSizer.from_config(
+                {"position_sizing": {"mode": "risk_percent", **config}},
+                default_lot_size=0.01,
+            )
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected invalid position sizing config to fail: {config}")

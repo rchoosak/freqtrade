@@ -52,6 +52,7 @@ from freqtrade.mt5_trade.strategies import (
     MT5Strategy,
     Signal,
     SmaCrossStrategy,
+    XauusdD1H4TrendStrategy,
 )
 from freqtrade.mt5_trade.symbols import (
     instrument_id_to_mt5_symbol,
@@ -96,6 +97,7 @@ __all__ = [
     "Signal",
     "SizingDecision",
     "SmaCrossStrategy",
+    "XauusdD1H4TrendStrategy",
     "build_historical_data_source",
     "dump_bars_json",
     "instrument_id_to_mt5_symbol",

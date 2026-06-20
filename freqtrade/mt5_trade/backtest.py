@@ -194,6 +194,7 @@ def run_backtest(
         )
 
         window = bars[: index + 1][-warmup_bars:]
+        strategy.on_position_state(symbol, position.side if position is not None else None)
         signal = strategy.on_bar(symbol, window)
         current = _current_state(position, pending)
 

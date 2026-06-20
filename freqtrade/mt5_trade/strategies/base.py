@@ -6,7 +6,7 @@ from typing import Literal, get_args
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar
-from freqtrade.mt5_trade.models import OrderKind
+from freqtrade.mt5_trade.models import OrderKind, OrderSide
 
 
 SignalAction = Literal["enter_long", "enter_short", "exit", "hold"]
@@ -83,6 +83,13 @@ class MT5Strategy(ABC):
         to reset per-symbol tracking so the next setup isn't masked by stale internal state.
         No-op by default.
         """
+
+    def on_position_state(  # noqa: B027  # optional override
+        self,
+        symbol: str,
+        side: OrderSide | None,
+    ) -> None:
+        """Provide the current open-position side before evaluating the next completed bar."""
 
 
 def validate_strategy_runtime(

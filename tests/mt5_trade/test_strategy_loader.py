@@ -4,7 +4,11 @@ import pytest
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.runner import build_default_strategy
-from freqtrade.mt5_trade.strategies import MT5Strategy, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import (
+    MT5Strategy,
+    SmaCrossStrategy,
+    XauusdD1H4TrendStrategy,
+)
 
 
 def test_build_strategy_defaults_to_sma_without_class() -> None:
@@ -29,6 +33,21 @@ def test_build_strategy_loads_class_from_dotted_path() -> None:
     assert isinstance(strategy, SmaCrossStrategy)
     assert strategy.fast == 4
     assert strategy.slow == 9
+
+
+def test_build_long_horizon_xauusd_strategy() -> None:
+    strategy = build_default_strategy(
+        {
+            "strategy": {
+                "class": "freqtrade.mt5_trade.strategies.XauusdD1H4TrendStrategy",
+                "allow_short": False,
+            }
+        }
+    )
+
+    assert isinstance(strategy, XauusdD1H4TrendStrategy)
+    assert strategy.allow_short is False
+    assert strategy.required_timeframe == "H1"
 
 
 def test_build_strategy_loads_from_path(tmp_path) -> None:

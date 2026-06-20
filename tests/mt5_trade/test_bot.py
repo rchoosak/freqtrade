@@ -31,6 +31,15 @@ class M1WarmupStrategy(ScriptedStrategy):
         return 20
 
 
+class PositionAwareStrategy(ScriptedStrategy):
+    def __init__(self, signals: list[Signal]) -> None:
+        super().__init__(signals)
+        self.position_states: list[str | None] = []
+
+    def on_position_state(self, symbol, side) -> None:
+        self.position_states.append(side)
+
+
 def _bridge_config(dry_run: bool = True) -> MT5BridgeConfig:
     return MT5BridgeConfig(
         symbols=(MT5SymbolMapping(base="EUR", quote="USD", mt5_symbol="EURUSD"),),
@@ -112,6 +121,17 @@ def test_bot_opens_position_once_without_restacking() -> None:
     # Only the first enter_long opens a position; the next two are ignored (already long).
     assert store.order_count() == 1
     assert store.open_positions()["EURUSD"].side == "buy"
+
+
+def test_bot_provides_current_position_state_to_strategy() -> None:
+    store = MT5TradeStore(":memory:")
+    strategy = PositionAwareStrategy([Signal("enter_long"), HOLD])
+    bot = _make_bot(strategy, store)
+
+    bot.run_once()
+    bot.run_once()
+
+    assert strategy.position_states == [None, "buy"]
 
 
 def test_bot_reverses_position() -> None:

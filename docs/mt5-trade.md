@@ -175,6 +175,51 @@ Dukascopy source example:
 `price` can be `bid`, `ask`, or `mid`. Dukascopy data is independent from your MT5 broker, so
 symbol suffixes and spreads may not match a live broker exactly.
 
+## XAUUSD D1/H4 Trend Strategy
+
+`XauusdD1H4TrendStrategy` is the built-in long-horizon strategy for holding gold positions over
+multiple days or weeks. It consumes completed `H1` bars and builds:
+
+- D1 regime: EMA30/EMA150 alignment, EMA150 slope, and ADX strength. Shorts use a higher default
+  ADX threshold (`20`) than longs (`15`).
+- H4 entry: EMA10/EMA30 alignment plus a close outside the previous Donchian 15-bar channel.
+  Breakout candles larger than `2.5` times the previous H4 ATR are rejected.
+- Risk: initial stop at `2.5` H4 ATR. Use `position_sizing.mode="risk_percent"`; lot size is
+  calculated as `risk amount / (stop distance * contract size)` and floored to the broker's lot
+  step. The growth example risks `0.75%` of `90%` of account equity (effective maximum `0.675%`),
+  caps cash risk at `750`, caps size at `0.50` lot, and skips the trade when the broker minimum
+  lot would exceed the risk budget. Live sizing prefers broker equity (including floating PnL)
+  over balance. The strategy intentionally emits no fixed take-profit.
+- `max_risk_amount` is denominated in the account currency. The direct stop-distance formula
+  assumes a USD-denominated account for XAUUSD with `contract_size=100`; automatic currency
+  conversion for non-USD accounts is not currently implemented.
+- `default_lot_size` remains present as a general fallback, but it is not used for entries while
+  `position_sizing.mode` is `risk_percent`.
+- On the available January 2025-May 2026 XAUUSD dataset, the tuned profile produced 19 trades,
+  used `0.03-0.17` lot, returned `11.13%`, and had `0.65%` maximum drawdown measured on realized
+  trade closes. The earlier strict profile produced only 9 trades and returned `4.77%`. Nineteen
+  trades is still a small sample and realized drawdown excludes intratrade equity swings, spread,
+  swap, and live slippage; it must not be interpreted as a guaranteed risk bound.
+- Exit: D1 close across EMA50, or an H4-close Chandelier stop using the highest/lowest 22 H4
+  candles and `3` ATR. The Chandelier level ratchets in the profitable direction and never
+  loosens while the process remains running.
+
+The initial stop is installed broker-side. The Chandelier is a strategy exit evaluated when a
+completed H4 candle becomes available, so it is not an intrabar broker trailing stop.
+`daily_anchor_hour` controls the UTC boundary used to build D1 candles when broker sessions do
+not align to midnight UTC.
+
+The default parameters require `3720` H1 bars; configure at least `warmup_bars=4000`. A complete
+Dukascopy download/backtest configuration is available at
+`config_examples/mt5-xauusd-d1-h4-trend.example.json`:
+
+```bash
+freqtrade download-data-mt5 \
+  --config config_examples/mt5-xauusd-d1-h4-trend.example.json
+freqtrade backtest-mt5 \
+  --config config_examples/mt5-xauusd-d1-h4-trend.example.json
+```
+
 ## Execution Plan
 
 **Phase 1 — Bridge primitives (done)**

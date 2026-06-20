@@ -41,6 +41,51 @@ def _aggregate_m1_to_m5(bars: list[MT5Bar]) -> list[MT5Bar]:
     return _aggregate_m1(bars, 300)
 
 
+def _aggregate_completed_bars(
+    bars: list[MT5Bar],
+    bucket_seconds: int,
+    source_seconds: int,
+    *,
+    anchor_seconds: int = 0,
+) -> list[MT5Bar]:
+    """
+    Aggregate lower-timeframe bars while excluding an incomplete final bucket.
+
+    Older buckets are complete once a later bucket exists, even if the market had a scheduled
+    closure and emitted fewer source bars. The latest bucket is included only when its final
+    expected source slot is present.
+    """
+    if bucket_seconds < source_seconds or bucket_seconds % source_seconds != 0:
+        raise ValueError("bucket_seconds must be a multiple of source_seconds.")
+    if not bars:
+        return []
+
+    buckets: dict[int, list[MT5Bar]] = {}
+    for bar in bars:
+        bucket = ((bar.time - anchor_seconds) // bucket_seconds) * bucket_seconds
+        bucket += anchor_seconds
+        buckets.setdefault(bucket, []).append(bar)
+
+    latest_bucket = max(buckets)
+    final_offset = bucket_seconds - source_seconds
+    aggregated: list[MT5Bar] = []
+    for bucket, items in sorted(buckets.items()):
+        ordered = sorted(items, key=lambda item: item.time)
+        if bucket == latest_bucket and ordered[-1].time < bucket + final_offset:
+            continue
+        aggregated.append(
+            MT5Bar(
+                time=bucket,
+                open=ordered[0].open,
+                high=max(item.high for item in ordered),
+                low=min(item.low for item in ordered),
+                close=ordered[-1].close,
+                volume=sum(item.volume for item in ordered),
+            )
+        )
+    return aggregated
+
+
 def _atr_series(bars: list[MT5Bar], length: int) -> list[float | None]:
     # Wilder's ATR. True range uses the previous bar's close, so result[i] is None until
     # there are `length` completed true-range values (i.e. from index `length` onward).
@@ -62,6 +107,61 @@ def _atr_series(bars: list[MT5Bar], length: int) -> list[float | None]:
     for index in range(length + 1, len(bars)):
         atr = (atr * (length - 1) + true_ranges[index - 1]) / length
         result[index] = atr
+    return result
+
+
+def _adx_series(bars: list[MT5Bar], length: int) -> list[float | None]:
+    """Wilder ADX series aligned to ``bars``; the first value appears at ``2*length - 1``."""
+    result: list[float | None] = [None] * len(bars)
+    if len(bars) < 2 * length:
+        return result
+
+    true_ranges: list[float] = []
+    plus_dm: list[float] = []
+    minus_dm: list[float] = []
+    for index in range(1, len(bars)):
+        current = bars[index]
+        previous = bars[index - 1]
+        up_move = current.high - previous.high
+        down_move = previous.low - current.low
+        true_ranges.append(
+            max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+        )
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+
+    smoothed_tr = sum(true_ranges[:length])
+    smoothed_plus = sum(plus_dm[:length])
+    smoothed_minus = sum(minus_dm[:length])
+    dx: list[float | None] = [None] * len(bars)
+    for index in range(length, len(bars)):
+        if index > length:
+            source_index = index - 1
+            smoothed_tr = smoothed_tr - smoothed_tr / length + true_ranges[source_index]
+            smoothed_plus = (
+                smoothed_plus - smoothed_plus / length + plus_dm[source_index]
+            )
+            smoothed_minus = (
+                smoothed_minus - smoothed_minus / length + minus_dm[source_index]
+            )
+        plus_di = 100 * smoothed_plus / smoothed_tr if smoothed_tr > 0 else 0.0
+        minus_di = 100 * smoothed_minus / smoothed_tr if smoothed_tr > 0 else 0.0
+        denominator = plus_di + minus_di
+        dx[index] = 100 * abs(plus_di - minus_di) / denominator if denominator > 0 else 0.0
+
+    first_adx = 2 * length - 1
+    initial_dx = [float(value) for value in dx[length : first_adx + 1] if value is not None]
+    result[first_adx] = sum(initial_dx) / length
+    for index in range(first_adx + 1, len(bars)):
+        current_dx = dx[index]
+        previous_adx = result[index - 1]
+        if current_dx is None or previous_adx is None:
+            continue
+        result[index] = (previous_adx * (length - 1) + current_dx) / length
     return result
 
 
