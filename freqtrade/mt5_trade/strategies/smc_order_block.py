@@ -12,7 +12,12 @@ from freqtrade.mt5_trade.strategies.base import (
     SignalAction,
     _validate_positive_int,
 )
-from freqtrade.mt5_trade.strategies.indicators import _atr_series, _sma
+from freqtrade.mt5_trade.strategies.indicators import (
+    _aggregate_m1,
+    _atr_series,
+    _ema_series,
+    _sma,
+)
 from freqtrade.mt5_trade.strategies.time_filters import _parse_sessions, _time_in_range
 
 
@@ -68,6 +73,11 @@ class SmcOrderBlockStrategy(MT5Strategy):
         use_session_filter: bool = True,
         timezone: str = "UTC",
         sessions: list[str] | None = None,
+        use_htf_filter: bool = False,
+        htf_minutes: int = 15,
+        htf_ema_fast: int = 21,
+        htf_ema_slow: int = 50,
+        htf_invert: bool = False,
     ) -> None:
         _validate_positive_int("structure_lookback", structure_lookback)
         _validate_positive_int("swing_strength", swing_strength)
@@ -89,6 +99,11 @@ class SmcOrderBlockStrategy(MT5Strategy):
             raise ValueError("breakeven_points must be >= 0.")
         if not 0 < tp1_close_fraction < 1:
             raise ValueError("tp1_close_fraction must be between 0 and 1 (exclusive).")
+        _validate_positive_int("htf_minutes", htf_minutes)
+        _validate_positive_int("htf_ema_fast", htf_ema_fast)
+        _validate_positive_int("htf_ema_slow", htf_ema_slow)
+        if htf_ema_fast >= htf_ema_slow:
+            raise ValueError("htf_ema_fast must be shorter than htf_ema_slow.")
 
         self.structure_lookback = structure_lookback
         self.swing_strength = swing_strength
@@ -105,12 +120,21 @@ class SmcOrderBlockStrategy(MT5Strategy):
         self.use_session_filter = use_session_filter
         self.timezone = ZoneInfo(timezone)
         self.sessions = _parse_sessions(sessions or ["12:00-21:00"])
+        self.use_htf_filter = use_htf_filter
+        self.htf_minutes = htf_minutes
+        self.htf_ema_fast = htf_ema_fast
+        self.htf_ema_slow = htf_ema_slow
+        self.htf_invert = htf_invert
 
     @property
     def _minimum_bars(self) -> int:
         # Enough history to confirm swings within the lookback, warm up ATR, and average volume.
         structure_need = self.structure_lookback + 2 * self.swing_strength + 1
-        return max(structure_need, self.atr_length + 1, self.volume_length) + 1
+        base = max(structure_need, self.atr_length + 1, self.volume_length)
+        if self.use_htf_filter:
+            # Also need enough M1 bars to build htf_ema_slow + 1 completed HTF candles.
+            base = max(base, (self.htf_ema_slow + 1) * self.htf_minutes)
+        return base + 1
 
     def on_bar(self, symbol: str, bars: list[MT5Bar]) -> Signal:
         if len(bars) < self._minimum_bars:
@@ -126,10 +150,14 @@ class SmcOrderBlockStrategy(MT5Strategy):
 
         previous = bars[-2]
         if block.side == "bullish" and self._bullish_trigger(block, previous, current):
+            if not self._htf_allows("long", bars):
+                return HOLD
             if not self._volatility_ok(bars, current):
                 return HOLD
             return self._entry_signal("enter_long", current.close, current.low - self.stop_buffer)
         if block.side == "bearish" and self._bearish_trigger(block, previous, current):
+            if not self._htf_allows("short", bars):
+                return HOLD
             if not self._volatility_ok(bars, current):
                 return HOLD
             return self._entry_signal(
@@ -244,6 +272,35 @@ class SmcOrderBlockStrategy(MT5Strategy):
             if average > 0 and current.volume < self.volume_factor * average:
                 return False
         return True
+
+    def _htf_allows(self, side: str, bars: list[MT5Bar]) -> bool:
+        # Confluence gate. Default (htf_invert=False): trade with the HTF trend — longs need an up
+        # bias, shorts a down bias. Inverted: fade the HTF trend (long into a down bias, short into
+        # an up bias). A neutral bias blocks either way. Off when use_htf_filter is False.
+        if not self.use_htf_filter:
+            return True
+        bias = self._htf_bias(bars)
+        if side == "long":
+            required = "down" if self.htf_invert else "up"
+        else:
+            required = "up" if self.htf_invert else "down"
+        return bias == required
+
+    def _htf_bias(self, bars: list[MT5Bar]) -> str:
+        # Higher-timeframe confluence: aggregate M1 -> htf_minutes candles and read an EMA trend.
+        # Longs require an up bias, shorts a down bias; otherwise the M1 setup is skipped.
+        htf = _aggregate_m1(bars, self.htf_minutes * 60)
+        if len(htf) < self.htf_ema_slow + 1:
+            return "neutral"
+        closes = [bar.close for bar in htf]
+        fast = _ema_series(closes, self.htf_ema_fast)
+        slow = _ema_series(closes, self.htf_ema_slow)
+        last = closes[-1]
+        if fast[-1] > slow[-1] and last > slow[-1]:
+            return "up"
+        if fast[-1] < slow[-1] and last < slow[-1]:
+            return "down"
+        return "neutral"
 
     def _in_session(self, timestamp: int) -> bool:
         local_time = datetime.fromtimestamp(timestamp, UTC).astimezone(self.timezone).time()

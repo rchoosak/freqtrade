@@ -10,15 +10,18 @@ def _sma(values: list[float], length: int) -> float:
     return sum(window) / len(window)
 
 
-def _aggregate_m1_to_m5(bars: list[MT5Bar]) -> list[MT5Bar]:
+def _aggregate_m1(bars: list[MT5Bar], bucket_seconds: int) -> list[MT5Bar]:
+    # Aggregate M1 bars into ``bucket_seconds`` candles, keeping only completed buckets (those with
+    # the full count of constituent minutes), so an in-progress HTF candle never biases a filter.
+    expected = max(1, bucket_seconds // 60)
     buckets: dict[int, list[MT5Bar]] = {}
     for bar in bars:
-        bucket = bar.time - (bar.time % 300)
+        bucket = bar.time - (bar.time % bucket_seconds)
         buckets.setdefault(bucket, []).append(bar)
 
     aggregated: list[MT5Bar] = []
     for bucket, items in sorted(buckets.items()):
-        if len(items) < 5:
+        if len(items) < expected:
             continue
         ordered = sorted(items, key=lambda item: item.time)
         aggregated.append(
@@ -32,6 +35,10 @@ def _aggregate_m1_to_m5(bars: list[MT5Bar]) -> list[MT5Bar]:
             )
         )
     return aggregated
+
+
+def _aggregate_m1_to_m5(bars: list[MT5Bar]) -> list[MT5Bar]:
+    return _aggregate_m1(bars, 300)
 
 
 def _atr_series(bars: list[MT5Bar], length: int) -> list[float | None]:

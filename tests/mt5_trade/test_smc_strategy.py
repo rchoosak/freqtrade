@@ -229,3 +229,79 @@ def test_spread_gate_disabled_by_default() -> None:
     bot._execute("EURUSD", _open_intent(), Signal(action="enter_long"), 1.10)
 
     assert len(bridge.orders) == 1
+
+
+# --- HTF bias / confluence -----------------------------------------------------------------
+
+
+def _trend_bars(start: float, step: float, n: int) -> list[MT5Bar]:
+    bars: list[MT5Bar] = []
+    price = start
+    for i in range(n):
+        o, c = price, price + step
+        bars.append(
+            MT5Bar(
+                time=i * 60,
+                open=o,
+                high=max(o, c) + 0.1,
+                low=min(o, c) - 0.1,
+                close=c,
+                volume=100.0,
+            )
+        )
+        price = c
+    return bars
+
+
+def _htf_strategy(**overrides) -> SmcOrderBlockStrategy:
+    params = dict(
+        structure_lookback=12,
+        swing_strength=1,
+        atr_length=2,
+        volume_length=2,
+        min_atr=0.0,
+        volume_factor=0.0,
+        use_session_filter=False,
+        use_htf_filter=True,
+        htf_minutes=2,
+        htf_ema_fast=2,
+        htf_ema_slow=3,
+    )
+    params.update(overrides)
+    return SmcOrderBlockStrategy(**params)
+
+
+def test_htf_bias_detects_uptrend() -> None:
+    assert _htf_strategy()._htf_bias(_trend_bars(100.0, 0.5, 16)) == "up"
+
+
+def test_htf_bias_detects_downtrend() -> None:
+    assert _htf_strategy()._htf_bias(_trend_bars(120.0, -0.5, 16)) == "down"
+
+
+def test_htf_filter_gates_counter_trend_long() -> None:
+    bars = _bars(_BULLISH_ROWS)
+    # The same bullish OB setup fires when the HTF filter is off...
+    assert _htf_strategy(use_htf_filter=False).on_bar("XAUUSD", bars).action == "enter_long"
+    # ...but is skipped when the HTF bias is not up (the M1 sweep entry follows a pullback).
+    gated = _htf_strategy()
+    assert gated._htf_bias(bars) != "up"
+    assert gated.on_bar("XAUUSD", bars) is HOLD
+
+
+def test_htf_invalid_ema_order_raises() -> None:
+    with pytest.raises(ValueError):
+        SmcOrderBlockStrategy(htf_ema_fast=50, htf_ema_slow=20)
+
+
+def test_htf_invert_flips_required_bias() -> None:
+    up_bars = _trend_bars(100.0, 0.5, 16)  # clear up bias
+    trend = _htf_strategy()  # follow HTF trend
+    invert = _htf_strategy(htf_invert=True)  # fade HTF trend
+
+    # Trend-following: up bias allows longs, blocks shorts.
+    assert trend._htf_allows("long", up_bars) is True
+    assert trend._htf_allows("short", up_bars) is False
+    # Inverted: up bias blocks longs, allows shorts (fade).
+    assert invert._htf_allows("long", up_bars) is False
+    assert invert._htf_allows("short", up_bars) is True
