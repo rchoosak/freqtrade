@@ -412,6 +412,8 @@ def test_m5_trend_m1_h1_filter_expands_minimum_warmup() -> None:
 
     assert strategy._minimum_h1_m1_bars == 1860
     assert strategy._minimum_m1_bars == 1860
+    assert strategy.required_timeframe == "M1"
+    assert strategy.minimum_bars == 1860
 
 
 def test_m5_trend_m1_atr_spread_filter_rejects_weak_trend() -> None:

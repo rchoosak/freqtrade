@@ -16,7 +16,11 @@ from freqtrade.mt5_trade.models import MT5BotConfig, MT5BridgeConfig
 from freqtrade.mt5_trade.notifier import Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.sizing import PositionSizer
-from freqtrade.mt5_trade.strategies import MT5Strategy, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import (
+    MT5Strategy,
+    SmaCrossStrategy,
+    validate_strategy_runtime,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -135,10 +139,15 @@ class MT5TradeRuntime:
     def build(self) -> MT5ForexBot:
         self.validate_environment()
 
+        strategy = self._strategy or self._build_strategy()
+        validate_strategy_runtime(
+            strategy,
+            timeframe=self._bot_config.timeframe,
+            warmup_bars=self._bot_config.warmup_bars,
+        )
         gateway = LazyMT5Gateway(self._bridge_config)
         bridge = MT5ExecutionBridge(self._bridge_config, gateway)
         store = self._store or MT5TradeStore(self._bot_config.db_path)
-        strategy = self._strategy or self._build_strategy()
         feed = self._feed or self._build_feed(gateway)
         account_balance = _optional_float(self._bridge_config.extra.get("starting_balance"))
         position_sizer = PositionSizer.from_config(

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from freqtrade.exceptions import OperationalException
-from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
+from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed, dump_bars_json
 
 
 def _bars(closes: list[float]) -> list[MT5Bar]:
@@ -48,6 +48,26 @@ def test_replay_feed_empty_data_raises() -> None:
         ReplayDataFeed({})
 
 
+def test_replay_feed_rejects_duplicate_timestamps() -> None:
+    bars = [
+        MT5Bar(time=1, open=1, high=1, low=1, close=1),
+        MT5Bar(time=1, open=2, high=2, low=2, close=2),
+    ]
+
+    with pytest.raises(OperationalException, match="duplicate timestamp"):
+        ReplayDataFeed({"EURUSD": bars})
+
+
+def test_replay_feed_rejects_out_of_order_timestamps() -> None:
+    bars = [
+        MT5Bar(time=2, open=2, high=2, low=2, close=2),
+        MT5Bar(time=1, open=1, high=1, low=1, close=1),
+    ]
+
+    with pytest.raises(OperationalException, match="out-of-order timestamp"):
+        ReplayDataFeed({"EURUSD": bars})
+
+
 def test_replay_feed_from_json(tmp_path) -> None:
     data_file = tmp_path / "bars.json"
     data_file.write_text(
@@ -64,6 +84,26 @@ def test_replay_feed_from_json(tmp_path) -> None:
     assert bars[1].volume == 0.0
 
 
+def test_replay_feed_from_json_rejects_unsorted_data(tmp_path) -> None:
+    data_file = tmp_path / "bars.json"
+    data_file.write_text(
+        json.dumps({"EURUSD": [[2, 2, 2, 2, 2], [1, 1, 1, 1, 1]]})
+    )
+
+    with pytest.raises(OperationalException, match="out-of-order timestamp"):
+        ReplayDataFeed.from_json(str(data_file))
+
+
+def test_dump_bars_json_rejects_duplicate_timestamps(tmp_path) -> None:
+    bars = [
+        MT5Bar(time=1, open=1, high=1, low=1, close=1),
+        MT5Bar(time=1, open=2, high=2, low=2, close=2),
+    ]
+
+    with pytest.raises(OperationalException, match="duplicate timestamp"):
+        dump_bars_json({"EURUSD": bars}, str(tmp_path / "bars.json"))
+
+
 class _Row(dict):
     """Minimal stand-in for a numpy structured-array row (supports row["x"] and row.dtype.names)."""
 
@@ -76,11 +116,14 @@ class _Row(dict):
 class _RatesMT5:
     TIMEFRAME_M5 = 5
 
-    def __init__(self) -> None:
+    def __init__(self, rates: list[_Row] | None = None) -> None:
         self.from_pos_calls: list = []
         self.healthy = True
         self.initialize_calls = 0
         self.shutdown_calls = 0
+        self.rates = rates or [
+            _Row(time=0, open=1.0, high=1.1, low=0.9, close=1.05, tick_volume=10)
+        ]
 
     def initialize(self, **kwargs):
         self.healthy = True
@@ -102,7 +145,7 @@ class _RatesMT5:
 
     def copy_rates_from_pos(self, symbol, timeframe, start_pos, count):
         self.from_pos_calls.append((symbol, timeframe, start_pos, count))
-        return [_Row(time=0, open=1.0, high=1.1, low=0.9, close=1.05, tick_volume=10)]
+        return self.rates
 
 
 def test_live_feed_fetches_completed_bars_from_position_one() -> None:
@@ -123,6 +166,27 @@ def test_live_feed_fetches_completed_bars_from_position_one() -> None:
     assert fake.from_pos_calls == [("EURUSD", 5, 1, 3)]
     assert len(bars) == 1
     assert bars[0].close == 1.05
+
+
+def test_live_feed_rejects_out_of_order_rates() -> None:
+    from freqtrade.mt5_trade.data import LiveMT5DataFeed
+    from freqtrade.mt5_trade.gateway import LazyMT5Gateway
+    from freqtrade.mt5_trade.models import MT5BridgeConfig, MT5SymbolMapping
+
+    fake = _RatesMT5(
+        [
+            _Row(time=2, open=2, high=2, low=2, close=2, tick_volume=10),
+            _Row(time=1, open=1, high=1, low=1, close=1, tick_volume=10),
+        ]
+    )
+    config = MT5BridgeConfig(
+        symbols=(MT5SymbolMapping(base="EUR", quote="USD", mt5_symbol="EURUSD"),),
+        dry_run=False,
+    )
+    feed = LiveMT5DataFeed(LazyMT5Gateway(config, mt5_module=fake), timeframe="M5")
+
+    with pytest.raises(OperationalException, match="out-of-order timestamp"):
+        feed.latest_bars("EURUSD", 3)
 
 
 def test_live_feed_reconnects_before_fetch_when_terminal_is_stale() -> None:

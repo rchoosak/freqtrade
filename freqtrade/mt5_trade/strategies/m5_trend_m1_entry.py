@@ -180,6 +180,14 @@ class M5TrendM1EntryStrategy(MT5Strategy):
         self._last_m5_time: dict[str, int] = {}
         self._h1_cache: dict[str, tuple[int, str]] = {}
 
+    @property
+    def required_timeframe(self) -> str:
+        return "M1"
+
+    @property
+    def minimum_bars(self) -> int:
+        return self._minimum_m1_bars
+
     def on_bar(self, symbol: str, bars: list[MT5Bar]) -> Signal:
         if len(bars) < self._minimum_m1_bars:
             return HOLD

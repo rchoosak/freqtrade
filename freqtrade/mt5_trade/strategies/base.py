@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal, get_args
 
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar
 from freqtrade.mt5_trade.models import OrderKind
 
@@ -61,6 +62,16 @@ HOLD = Signal(action="hold")
 class MT5Strategy(ABC):
     """Decides an action from the latest completed bars of a single symbol."""
 
+    @property
+    def required_timeframe(self) -> str | None:
+        """Timeframe the feed must provide, or ``None`` when any timeframe is supported."""
+        return None
+
+    @property
+    def minimum_bars(self) -> int:
+        """Minimum configured warmup required before this strategy can produce a signal."""
+        return 1
+
     @abstractmethod
     def on_bar(self, symbol: str, bars: list[MT5Bar]) -> Signal:
         """Return a Signal given the most recent bars (oldest first)."""
@@ -72,6 +83,35 @@ class MT5Strategy(ABC):
         to reset per-symbol tracking so the next setup isn't masked by stale internal state.
         No-op by default.
         """
+
+
+def validate_strategy_runtime(
+    strategy: MT5Strategy,
+    *,
+    timeframe: str | None,
+    warmup_bars: int,
+) -> None:
+    """Fail fast when runtime settings cannot satisfy a strategy's data requirements."""
+    required_timeframe = strategy.required_timeframe
+    minimum_bars = strategy.minimum_bars
+    if minimum_bars < 1:
+        raise OperationalException(
+            f"{strategy.__class__.__name__}.minimum_bars must be >= 1, got {minimum_bars}."
+        )
+    if (
+        timeframe is not None
+        and required_timeframe is not None
+        and timeframe.upper() != required_timeframe.upper()
+    ):
+        raise OperationalException(
+            f"{strategy.__class__.__name__} requires timeframe {required_timeframe}, "
+            f"but the runtime is configured for {timeframe}."
+        )
+    if warmup_bars < minimum_bars:
+        raise OperationalException(
+            f"{strategy.__class__.__name__} requires warmup_bars >= {minimum_bars}, "
+            f"but the runtime is configured for {warmup_bars}."
+        )
 
 
 def _validate_positive_int(name: str, value: int) -> None:

@@ -21,7 +21,7 @@ from freqtrade.mt5_trade.notifier import LoggingNotifier, Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
 from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
-from freqtrade.mt5_trade.strategies import MT5Strategy, Signal
+from freqtrade.mt5_trade.strategies import MT5Strategy, Signal, validate_strategy_runtime
 
 
 logger = logging.getLogger(__name__)
@@ -148,6 +148,11 @@ class MT5ForexBot:
         notifier: Notifier | None = None,
         max_consecutive_errors: int = 5,
     ) -> None:
+        validate_strategy_runtime(
+            strategy,
+            timeframe=bot_config.timeframe,
+            warmup_bars=bot_config.warmup_bars,
+        )
         self._bridge = bridge
         self._feed = feed
         self._strategy = strategy

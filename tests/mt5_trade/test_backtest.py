@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.backtest import run_backtest
 from freqtrade.mt5_trade.data import MT5Bar
 from freqtrade.mt5_trade.models import MT5SymbolMapping
@@ -19,8 +22,31 @@ class ScriptedStrategy(MT5Strategy):
         self.closed.append(symbol)
 
 
+class WarmupStrategy(ScriptedStrategy):
+    @property
+    def minimum_bars(self) -> int:
+        return 20
+
+
 def _bars(closes: list[float]) -> list[MT5Bar]:
     return [MT5Bar(time=i, open=c, high=c, low=c, close=c) for i, c in enumerate(closes)]
+
+
+def test_backtest_rejects_insufficient_strategy_warmup() -> None:
+    strategy = WarmupStrategy([HOLD])
+
+    with pytest.raises(OperationalException, match="requires warmup_bars >= 20"):
+        run_backtest(strategy, {"EURUSD": _bars([1, 2])}, warmup_bars=19)
+
+
+def test_backtest_rejects_out_of_order_bars() -> None:
+    bars = [
+        MT5Bar(time=2, open=2, high=2, low=2, close=2),
+        MT5Bar(time=1, open=1, high=1, low=1, close=1),
+    ]
+
+    with pytest.raises(OperationalException, match="out-of-order timestamp"):
+        run_backtest(ScriptedStrategy([HOLD]), {"EURUSD": bars})
 
 
 def test_backtest_notifies_strategy_on_stop_loss_close() -> None:

@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
-from freqtrade.mt5_trade.data import MT5Bar
+from freqtrade.mt5_trade.data import MT5Bar, validate_bar_sequences
 from freqtrade.mt5_trade.models import MT5SymbolMapping, OrderKind, OrderSide, split_lot
 from freqtrade.mt5_trade.position import plan_transitions
 from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
-from freqtrade.mt5_trade.strategies import MT5Strategy, Signal
+from freqtrade.mt5_trade.strategies import MT5Strategy, Signal, validate_strategy_runtime
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,8 @@ def run_backtest(
     price (and are cancelled if the strategy reverses/exits first). Any position still open at the
     end is marked out at the final close when ``close_at_end`` is set.
     """
+    validate_strategy_runtime(strategy, timeframe=None, warmup_bars=warmup_bars)
+    validate_bar_sequences(data)
     sizer = position_sizer or PositionSizer(
         fixed_lot_size=default_volume,
         contract_size=contract_size,

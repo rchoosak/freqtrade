@@ -98,6 +98,7 @@ def start_backtest_mt5(args: dict[str, Any]) -> int:
     from freqtrade.mt5_trade.data import load_bars_json
     from freqtrade.mt5_trade.runner import build_default_strategy
     from freqtrade.mt5_trade.sizing import PositionSizer
+    from freqtrade.mt5_trade.strategies import validate_strategy_runtime
 
     setup_logging_pre()
     bridge_config, bot_config = _load_mt5_config_arg(args)
@@ -115,8 +116,14 @@ def start_backtest_mt5(args: dict[str, Any]) -> int:
         default_lot_size=bridge_config.default_lot_size,
         contract_size=contract_size,
     )
+    strategy = build_default_strategy(bridge_config.extra)
+    validate_strategy_runtime(
+        strategy,
+        timeframe=bot_config.timeframe,
+        warmup_bars=bot_config.warmup_bars,
+    )
     result = run_backtest(
-        build_default_strategy(bridge_config.extra),
+        strategy,
         data,
         default_volume=bridge_config.default_lot_size,
         warmup_bars=bot_config.warmup_bars,

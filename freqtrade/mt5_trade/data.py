@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 from freqtrade.exceptions import OperationalException
@@ -57,6 +58,7 @@ class ReplayDataFeed(MT5DataFeed):
     def __init__(self, data: dict[str, list[MT5Bar]], *, warmup: int = 1) -> None:
         if not data:
             raise OperationalException("ReplayDataFeed requires at least one symbol of bars.")
+        validate_bar_sequences(data)
         self._data = {symbol: list(bars) for symbol, bars in data.items()}
         # Reveal `warmup` bars up front so the first iteration already has history.
         self._cursor = {
@@ -145,7 +147,7 @@ class LiveMT5DataFeed(MT5DataFeed):
             raise OperationalException(
                 f"MT5 {source} returned no data for {symbol}: {self._gateway.mt5.last_error()}"
             )
-        return [
+        bars = [
             MT5Bar(
                 time=int(row["time"]),
                 open=float(row["open"]),
@@ -156,6 +158,8 @@ class LiveMT5DataFeed(MT5DataFeed):
             )
             for row in rates
         ]
+        validate_bar_sequences({symbol: bars})
+        return bars
 
     def close(self) -> None:
         self._gateway.shutdown()
@@ -174,7 +178,7 @@ def load_bars_json(path: str) -> dict[str, list[MT5Bar]]:
     raw = json.loads(Path(path).read_text())
     if not isinstance(raw, dict):
         raise OperationalException(f"Bar data file {path!r} must map symbol -> list of bars.")
-    return {
+    data = {
         symbol: [
             MT5Bar(
                 time=int(row[0]),
@@ -188,6 +192,20 @@ def load_bars_json(path: str) -> dict[str, list[MT5Bar]]:
         ]
         for symbol, rows in raw.items()
     }
+    validate_bar_sequences(data)
+    return data
+
+
+def validate_bar_sequences(data: dict[str, list[MT5Bar]]) -> None:
+    """Require strictly increasing timestamps so replay windows cannot contain future bars."""
+    for symbol, bars in data.items():
+        for previous, current in pairwise(bars):
+            if current.time <= previous.time:
+                issue = "duplicate" if current.time == previous.time else "out-of-order"
+                raise OperationalException(
+                    f"Bar data for {symbol!r} has an {issue} timestamp at {current.time}; "
+                    "timestamps must be strictly increasing."
+                )
 
 
 def dump_bars_json(data: dict[str, list[MT5Bar]], path: str) -> None:
@@ -195,6 +213,7 @@ def dump_bars_json(data: dict[str, list[MT5Bar]], path: str) -> None:
     import json
     from pathlib import Path
 
+    validate_bar_sequences(data)
     serializable = {
         symbol: [[b.time, b.open, b.high, b.low, b.close, b.volume] for b in bars]
         for symbol, bars in data.items()

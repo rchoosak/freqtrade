@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.bot import MT5ForexBot
 from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.execution import MT5ExecutionBridge
@@ -16,6 +19,16 @@ class ScriptedStrategy(MT5Strategy):
 
     def on_bar(self, symbol, bars):
         return self._signals.pop(0) if self._signals else HOLD
+
+
+class M1WarmupStrategy(ScriptedStrategy):
+    @property
+    def required_timeframe(self) -> str:
+        return "M1"
+
+    @property
+    def minimum_bars(self) -> int:
+        return 20
 
 
 def _bridge_config(dry_run: bool = True) -> MT5BridgeConfig:
@@ -37,6 +50,38 @@ def _feed(n: int = 5) -> ReplayDataFeed:
 def _make_bot(strategy: MT5Strategy, store: MT5TradeStore) -> MT5ForexBot:
     bridge = MT5ExecutionBridge(_bridge_config())
     return MT5ForexBot(bridge, _feed(), strategy, store, _bot_config(), default_volume=0.05)
+
+
+def test_bot_rejects_strategy_timeframe_mismatch() -> None:
+    strategy = M1WarmupStrategy([HOLD])
+    config = MT5BotConfig(
+        symbols=("EURUSD",), timeframe="M5", warmup_bars=20, poll_interval=1.0
+    )
+
+    with pytest.raises(OperationalException, match="requires timeframe M1"):
+        MT5ForexBot(
+            MT5ExecutionBridge(_bridge_config()),
+            _feed(),
+            strategy,
+            MT5TradeStore(":memory:"),
+            config,
+        )
+
+
+def test_bot_rejects_insufficient_strategy_warmup() -> None:
+    strategy = M1WarmupStrategy([HOLD])
+    config = MT5BotConfig(
+        symbols=("EURUSD",), timeframe="M1", warmup_bars=19, poll_interval=1.0
+    )
+
+    with pytest.raises(OperationalException, match="requires warmup_bars >= 20"):
+        MT5ForexBot(
+            MT5ExecutionBridge(_bridge_config()),
+            _feed(),
+            strategy,
+            MT5TradeStore(":memory:"),
+            config,
+        )
 
 
 def test_bot_opens_position_once_without_restacking() -> None:
