@@ -113,6 +113,18 @@ fully offline; for live trading it connects to a running MT5 terminal. `backtest
 - `replay_data` (optional) points to a JSON file mapping `symbol -> [[time,o,h,l,c,v], ...]`;
   when present the bot replays it offline instead of using the live MT5 feed.
 - `strategy` parameters are passed to the default `SmaCrossStrategy`.
+- `M5TrendM1EntryStrategy` can enable `use_h1_filter` so H1 controls direction before M5/M1
+  entries are allowed. With the default `h1_fast=9`, `h1_slow=26`, and
+  `h1_slope_lookback=3`, a long requires H1 EMA9 above EMA26, price above EMA26, and a rising
+  EMA26; shorts require the inverse. `h1_filter_mode="strict"` also blocks entries while H1 is
+  neutral, while `"block_opposite"` allows neutral regimes but rejects trades directly against
+  the H1 bias. Use at least `warmup_bars=2000` for an M1 feed so enough completed H1 candles are
+  available.
+- Sideways filtering can be volatility-adjusted with `trend_min_spread_atr`: the absolute
+  distance between the M5 fast/slow EMAs must be at least that multiple of M5 ATR. Optional
+  `trend_require_spread_expansion` and `trend_require_slow_slope` gates are available for more
+  restrictive setups. For XAUUSD M1 tests, `trend_atr_length=14` and
+  `trend_min_spread_atr=0.3` are used with a full-position `risk_reward=1.0`.
 - `reconcile_interval` (optional, live only) reconciles with broker positions every N
   iterations; `0` reconciles only at startup.
 - `history_bars` / `history_file` configure `download-data-mt5`: how many recent bars to fetch

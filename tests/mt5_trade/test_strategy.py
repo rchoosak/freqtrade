@@ -49,6 +49,41 @@ def _append_m1_closes(bars: list[MT5Bar], closes: list[float]) -> list[MT5Bar]:
     return result
 
 
+def _m1_bars_from_h1_closes(closes: list[float]) -> list[MT5Bar]:
+    bars: list[MT5Bar] = []
+    previous = closes[0]
+    for hour_index, close in enumerate(closes):
+        hour_start = hour_index * 3600
+        open_price = previous if hour_index else close
+        for minute in range(60):
+            value = open_price + (close - open_price) * (minute + 1) / 60
+            bars.append(
+                MT5Bar(
+                    time=hour_start + minute * 60,
+                    open=value,
+                    high=value + 0.1,
+                    low=value - 0.1,
+                    close=value,
+                )
+            )
+        previous = close
+    return bars
+
+
+def _shift_bars(bars: list[MT5Bar], start: int) -> list[MT5Bar]:
+    return [
+        MT5Bar(
+            time=start + index * 60,
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+            volume=bar.volume,
+        )
+        for index, bar in enumerate(bars)
+    ]
+
+
 def _m5_m1_strategy() -> M5TrendM1EntryStrategy:
     return M5TrendM1EntryStrategy(
         trend_fast=2,
@@ -157,6 +192,77 @@ def test_m5_trend_m1_entry_enters_short_on_rebound_rejection() -> None:
 
     assert signal.action == "enter_short"
     assert signal.stop_loss == 106.6
+
+
+def test_m5_trend_m1_h1_bias_requires_ema_alignment_and_slow_slope() -> None:
+    strategy = M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        h1_fast=2,
+        h1_slow=4,
+        h1_slope_lookback=1,
+        use_h1_filter=True,
+        use_session_filter=False,
+    )
+
+    up = _m1_bars_from_h1_closes([100, 101, 102, 103, 104])
+    down = _m1_bars_from_h1_closes([104, 103, 102, 101, 100])
+    flat = _m1_bars_from_h1_closes([100, 100, 100, 100, 100])
+
+    assert strategy._h1_bias("UP", up) == "long"
+    assert strategy._h1_bias("DOWN", down) == "short"
+    assert strategy._h1_bias("FLAT", flat) == "neutral"
+
+
+def test_m5_trend_m1_h1_filter_modes_handle_neutral_bias() -> None:
+    strict = M5TrendM1EntryStrategy(use_h1_filter=True, h1_filter_mode="strict")
+    block_opposite = M5TrendM1EntryStrategy(
+        use_h1_filter=True,
+        h1_filter_mode="block_opposite",
+    )
+
+    assert strict._h1_allows("long", "neutral") is False
+    assert block_opposite._h1_allows("long", "neutral") is True
+    assert block_opposite._h1_allows("short", "long") is False
+    assert block_opposite._h1_allows("short", "short") is True
+
+
+def test_m5_trend_m1_rejects_unknown_h1_filter_mode() -> None:
+    with pytest.raises(ValueError, match="h1_filter_mode"):
+        M5TrendM1EntryStrategy(h1_filter_mode="loose")
+
+
+def test_m5_trend_m1_h1_filter_blocks_short_during_h1_uptrend() -> None:
+    h1_context = _m1_bars_from_h1_closes([100, 105, 110, 115])
+    short_setup = _m1_bars_from_m5_closes([110, 109, 108, 107, 106, 107, 105, 104])
+    short_setup = _append_m1_closes(short_setup, [100, 103, 106, 105])
+    bars = h1_context + _shift_bars(short_setup, len(h1_context) * 60)
+    strategy = M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        sideways_rsi_low=49,
+        sideways_rsi_high=51,
+        stoch_rsi_length=3,
+        stoch_k_smooth=1,
+        stoch_d_smooth=2,
+        swing_lookback=5,
+        stop_buffer=0.5,
+        use_h1_filter=True,
+        h1_fast=2,
+        h1_slow=3,
+        h1_slope_lookback=1,
+        use_session_filter=False,
+    )
+
+    assert strategy._h1_bias("XAUUSD", bars) == "long"
+    assert strategy._m5_trend(_m1_bars_from_m5_closes(
+        [110, 109, 108, 107, 106, 107, 105, 104]
+    )) == "short"
+    assert strategy.on_bar("XAUUSD", bars).action == "hold"
 
 
 def test_m5_trend_m1_entry_holds_outside_configured_session() -> None:
@@ -289,3 +395,84 @@ def test_m5_trend_m1_minimum_bars_counts_rsi_length_not_fast() -> None:
     # Stoch warm-up = trend_rsi_length(2) + stoch_rsi_length(20) + k(1) + d(1) + 2 = 26, the
     # binding constraint here. Using trend_fast(1) instead would have under-counted to 25.
     assert strategy._minimum_m1_bars == 26
+
+
+def test_m5_trend_m1_h1_filter_expands_minimum_warmup() -> None:
+    strategy = M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        use_h1_filter=True,
+        h1_fast=9,
+        h1_slow=26,
+        h1_slope_lookback=3,
+        use_session_filter=False,
+    )
+
+    assert strategy._minimum_h1_m1_bars == 1860
+    assert strategy._minimum_m1_bars == 1860
+
+
+def test_m5_trend_m1_atr_spread_filter_rejects_weak_trend() -> None:
+    bars = _bars([100, 101, 102, 103, 104, 103, 105, 106])
+    base = _m5_m1_strategy()
+    filtered = M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        sideways_rsi_low=49,
+        sideways_rsi_high=51,
+        trend_atr_length=3,
+        trend_min_spread_atr=100.0,
+        use_session_filter=False,
+    )
+
+    assert base._m5_trend(bars) == "long"
+    assert filtered._m5_trend(bars) == "neutral"
+
+
+def test_m5_trend_m1_spread_expansion_filter_rejects_fading_trend() -> None:
+    bars = _bars([100, 97, 97.5, 100.5, 97.5, 96.5, 94.5, 95, 97, 99, 97, 95])
+    base = _m5_m1_strategy()
+    filtered = M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        sideways_rsi_low=49,
+        sideways_rsi_high=51,
+        trend_require_spread_expansion=True,
+        trend_spread_lookback=2,
+        use_session_filter=False,
+    )
+
+    assert base._m5_trend(bars) == "short"
+    assert filtered._m5_trend(bars) == "neutral"
+
+
+def test_m5_trend_m1_slow_slope_filter_rejects_unconfirmed_trend() -> None:
+    bars = _bars([100, 99.5, 99, 98, 95, 92, 91.5, 94.5, 95.5, 96.5, 97.5, 94.5])
+    base = _m5_m1_strategy()
+    filtered = M5TrendM1EntryStrategy(
+        trend_fast=2,
+        trend_slow=4,
+        trend_rsi_length=3,
+        trend_bb_length=4,
+        sideways_rsi_low=49,
+        sideways_rsi_high=51,
+        trend_require_slow_slope=True,
+        trend_slope_lookback=2,
+        use_session_filter=False,
+    )
+
+    assert base._m5_trend(bars) == "short"
+    assert filtered._m5_trend(bars) == "neutral"
+
+
+def test_m5_trend_m1_rejects_invalid_trend_strength_config() -> None:
+    with pytest.raises(ValueError, match="trend_min_spread_atr"):
+        M5TrendM1EntryStrategy(trend_min_spread_atr=-0.1)
+    with pytest.raises(ValueError, match="trend_spread_lookback"):
+        M5TrendM1EntryStrategy(trend_spread_lookback=0)
