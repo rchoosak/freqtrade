@@ -21,7 +21,12 @@ from freqtrade.mt5_trade.notifier import LoggingNotifier, Notifier
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent, plan_transitions
 from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
-from freqtrade.mt5_trade.strategies import MT5Strategy, Signal, validate_strategy_runtime
+from freqtrade.mt5_trade.strategies import (
+    MT5Strategy,
+    Signal,
+    validate_strategy_bars,
+    validate_strategy_runtime,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -218,8 +223,7 @@ class MT5ForexBot:
         self._iterations += 1
         for symbol in self._config.symbols:
             bars = self._feed.latest_bars(symbol, self._config.warmup_bars)
-            if not bars:
-                continue
+            validate_strategy_bars(self._strategy, symbol, bars)
             # Scale out before asking the strategy, mirroring the backtester's ordering.
             self._manage_scale_out(symbol, bars[-1])
             signal = self._strategy.on_bar(symbol, bars)

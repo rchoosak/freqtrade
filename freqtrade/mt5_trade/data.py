@@ -165,12 +165,12 @@ class LiveMT5DataFeed(MT5DataFeed):
         self._gateway.shutdown()
 
 
-def load_bars_json(path: str) -> dict[str, list[MT5Bar]]:
+def load_bars_json(path: str, *, strict: bool = True) -> dict[str, list[MT5Bar]]:
     """
     Load bars from a JSON file mapping ``symbol -> [[time, open, high, low, close, volume], ...]``.
 
-    Volume is optional per row. Shared by the replay feed and the backtester so dry-run and
-    backtest consume the same on-disk format produced by the history downloader.
+    Volume is optional per row. Replay and backtest callers use strict timestamp validation;
+    importers may disable it so they can normalize source ordering before writing a replay cache.
     """
     import json
     from pathlib import Path
@@ -192,7 +192,8 @@ def load_bars_json(path: str) -> dict[str, list[MT5Bar]]:
         ]
         for symbol, rows in raw.items()
     }
-    validate_bar_sequences(data)
+    if strict:
+        validate_bar_sequences(data)
     return data
 
 

@@ -3,11 +3,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar, validate_bar_sequences
 from freqtrade.mt5_trade.models import MT5SymbolMapping, OrderKind, OrderSide, split_lot
 from freqtrade.mt5_trade.position import plan_transitions
 from freqtrade.mt5_trade.sizing import PositionSizer, entry_side_for_action
-from freqtrade.mt5_trade.strategies import MT5Strategy, Signal, validate_strategy_runtime
+from freqtrade.mt5_trade.strategies import (
+    MT5Strategy,
+    Signal,
+    validate_strategy_bars,
+    validate_strategy_runtime,
+)
 
 
 @dataclass(frozen=True)
@@ -129,7 +135,11 @@ def run_backtest(
     end is marked out at the final close when ``close_at_end`` is set.
     """
     validate_strategy_runtime(strategy, timeframe=None, warmup_bars=warmup_bars)
+    if not data:
+        raise OperationalException("Backtest requires bar data for at least one symbol.")
     validate_bar_sequences(data)
+    for symbol, bars in data.items():
+        validate_strategy_bars(strategy, symbol, bars)
     sizer = position_sizer or PositionSizer(
         fixed_lot_size=default_volume,
         contract_size=contract_size,

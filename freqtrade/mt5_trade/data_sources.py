@@ -58,7 +58,7 @@ class JsonDataSource(MT5HistoricalDataSource):
         self._path = path
 
     def load(self, symbols: Iterable[str]) -> dict[str, list[MT5Bar]]:
-        raw = load_bars_json(self._path)
+        raw = load_bars_json(self._path, strict=False)
         requested = tuple(symbols)
         missing = [symbol for symbol in requested if symbol not in raw]
         if missing:

@@ -104,6 +104,17 @@ def test_json_data_source_filters_requested_symbols(tmp_path) -> None:
     assert data["GBPUSD"][0].close == 2
 
 
+def test_json_data_source_sorts_imported_bars(tmp_path) -> None:
+    json_path = tmp_path / "source.json"
+    json_path.write_text(
+        json.dumps({"EURUSD": [[2, 2, 2, 2, 2], [1, 1, 1, 1, 1]]})
+    )
+
+    data = JsonDataSource(str(json_path)).load(["EURUSD"])
+
+    assert [bar.time for bar in data["EURUSD"]] == [1, 2]
+
+
 def test_build_historical_data_source_uses_csv_config(tmp_path) -> None:
     csv_path = tmp_path / "EURUSD.csv"
     csv_path.write_text("time,open,high,low,close\n1704067200,1,1,1,1\n")

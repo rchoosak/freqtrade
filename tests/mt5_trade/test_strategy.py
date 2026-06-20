@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar
-from freqtrade.mt5_trade.strategies import M5TrendM1EntryStrategy, Signal, SmaCrossStrategy
+from freqtrade.mt5_trade.strategies import (
+    M5TrendM1EntryStrategy,
+    Signal,
+    SmaCrossStrategy,
+    validate_strategy_runtime,
+)
 
 
 def _bars(closes: list[float]) -> list[MT5Bar]:
@@ -120,7 +126,15 @@ def test_signal_rejects_scale_out_pending_entry() -> None:
 def test_sma_cross_holds_without_enough_bars() -> None:
     strategy = SmaCrossStrategy(fast=2, slow=3)
     # slow + 1 = 4 bars required.
+    assert strategy.minimum_bars == 4
     assert strategy.on_bar("EURUSD", _bars([1, 2, 3])).action == "hold"
+
+
+def test_sma_cross_runtime_rejects_insufficient_warmup() -> None:
+    strategy = SmaCrossStrategy(fast=2, slow=3)
+
+    with pytest.raises(OperationalException, match="requires warmup_bars >= 4"):
+        validate_strategy_runtime(strategy, timeframe="M5", warmup_bars=3)
 
 
 def test_sma_cross_enters_long_on_cross_up() -> None:

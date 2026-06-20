@@ -84,6 +84,23 @@ def test_bot_rejects_insufficient_strategy_warmup() -> None:
         )
 
 
+def test_bot_rejects_insufficient_actual_history() -> None:
+    strategy = M1WarmupStrategy([HOLD])
+    config = MT5BotConfig(
+        symbols=("EURUSD",), timeframe="M1", warmup_bars=20, poll_interval=1.0
+    )
+    bot = MT5ForexBot(
+        MT5ExecutionBridge(_bridge_config()),
+        _feed(5),
+        strategy,
+        MT5TradeStore(":memory:"),
+        config,
+    )
+
+    with pytest.raises(OperationalException, match=r"requires at least 20 bars.*only 5"):
+        bot.run_once()
+
+
 def test_bot_opens_position_once_without_restacking() -> None:
     store = MT5TradeStore(":memory:")
     bot = _make_bot(ScriptedStrategy([Signal("enter_long")] * 3), store)

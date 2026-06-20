@@ -127,7 +127,11 @@ class SmcOrderBlockStrategy(MT5Strategy):
         self.htf_invert = htf_invert
 
     @property
-    def _minimum_bars(self) -> int:
+    def required_timeframe(self) -> str:
+        return "M1"
+
+    @property
+    def minimum_bars(self) -> int:
         # Enough history to confirm swings within the lookback, warm up ATR, and average volume.
         structure_need = self.structure_lookback + 2 * self.swing_strength + 1
         base = max(structure_need, self.atr_length + 1, self.volume_length)
@@ -137,7 +141,7 @@ class SmcOrderBlockStrategy(MT5Strategy):
         return base + 1
 
     def on_bar(self, symbol: str, bars: list[MT5Bar]) -> Signal:
-        if len(bars) < self._minimum_bars:
+        if len(bars) < self.minimum_bars:
             return HOLD
 
         current = bars[-1]

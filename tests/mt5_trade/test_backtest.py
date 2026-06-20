@@ -36,7 +36,19 @@ def test_backtest_rejects_insufficient_strategy_warmup() -> None:
     strategy = WarmupStrategy([HOLD])
 
     with pytest.raises(OperationalException, match="requires warmup_bars >= 20"):
-        run_backtest(strategy, {"EURUSD": _bars([1, 2])}, warmup_bars=19)
+        run_backtest(strategy, {"EURUSD": _bars([1] * 20)}, warmup_bars=19)
+
+
+def test_backtest_rejects_insufficient_actual_history() -> None:
+    strategy = WarmupStrategy([HOLD])
+
+    with pytest.raises(OperationalException, match=r"requires at least 20 bars.*only 2"):
+        run_backtest(strategy, {"EURUSD": _bars([1, 2])}, warmup_bars=20)
+
+
+def test_backtest_rejects_empty_data() -> None:
+    with pytest.raises(OperationalException, match="at least one symbol"):
+        run_backtest(ScriptedStrategy([HOLD]), {})
 
 
 def test_backtest_rejects_out_of_order_bars() -> None:

@@ -35,6 +35,10 @@ class SmaCrossStrategy(MT5Strategy):
         self.stop_loss_distance = stop_loss_distance
         self.take_profit_distance = take_profit_distance
 
+    @property
+    def minimum_bars(self) -> int:
+        return self.slow + 1
+
     def on_bar(self, symbol: str, bars: list[MT5Bar]) -> Signal:
         # Need slow+1 bars to compare this bar's relationship against the previous bar's.
         if len(bars) < self.slow + 1:

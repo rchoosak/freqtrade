@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import pytest
 
+from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.bot import MT5ForexBot
 from freqtrade.mt5_trade.data import MT5Bar, ReplayDataFeed
 from freqtrade.mt5_trade.models import MT5BotConfig, MT5OrderResult
 from freqtrade.mt5_trade.persistence import MT5TradeStore
 from freqtrade.mt5_trade.position import OrderIntent
-from freqtrade.mt5_trade.strategies import HOLD, MT5Strategy, Signal, SmcOrderBlockStrategy
+from freqtrade.mt5_trade.strategies import (
+    HOLD,
+    MT5Strategy,
+    Signal,
+    SmcOrderBlockStrategy,
+    validate_strategy_runtime,
+)
 from freqtrade.mt5_trade.strategies.indicators import _atr_series
 
 
@@ -95,7 +102,20 @@ def test_no_sweep_holds() -> None:
 def test_insufficient_bars_holds() -> None:
     strategy = SmcOrderBlockStrategy(**_SMALL)
     # One short of the warmup minimum (16) -> HOLD.
+    assert strategy.required_timeframe == "M1"
+    assert strategy.minimum_bars == 16
     assert strategy.on_bar("XAUUSD", _bars(_BULLISH_ROWS)[:15]) is HOLD
+
+
+def test_runtime_rejects_non_m1_timeframe() -> None:
+    strategy = SmcOrderBlockStrategy(**_SMALL)
+
+    with pytest.raises(OperationalException, match="requires timeframe M1"):
+        validate_strategy_runtime(
+            strategy,
+            timeframe="M5",
+            warmup_bars=strategy.minimum_bars,
+        )
 
 
 def test_session_filter_blocks_out_of_window() -> None:

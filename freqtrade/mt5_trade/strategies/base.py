@@ -114,6 +114,19 @@ def validate_strategy_runtime(
         )
 
 
+def validate_strategy_bars(
+    strategy: MT5Strategy,
+    symbol: str,
+    bars: list[MT5Bar],
+) -> None:
+    """Fail when a feed or historical dataset cannot supply the strategy's minimum history."""
+    if len(bars) < strategy.minimum_bars:
+        raise OperationalException(
+            f"{strategy.__class__.__name__} requires at least {strategy.minimum_bars} bars "
+            f"for {symbol}, but only {len(bars)} are available."
+        )
+
+
 def _validate_positive_int(name: str, value: int) -> None:
     if value < 1:
         raise ValueError(f"{name} must be >= 1.")
