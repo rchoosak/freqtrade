@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import math
+from datetime import UTC, datetime
+from typing import Any
+
 from freqtrade.mt5_trade.data import MT5Bar
 from freqtrade.mt5_trade.models import OrderSide
 from freqtrade.mt5_trade.strategies.base import (
@@ -21,7 +25,7 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
     Long-horizon XAUUSD trend strategy using H1 input, H4 breakouts, and a D1 regime.
 
     Entries require a directional D1 EMA/ADX regime and an H4 Donchian breakout aligned with
-    H4 EMA20/50. Positions have an ATR initial stop and no fixed take-profit. They exit on an
+    H4 EMA10/30. Positions have an ATR initial stop and no fixed take-profit. They exit on an
     H4-close Chandelier reversal or when the latest completed D1 candle crosses the exit EMA.
     """
 
@@ -41,10 +45,14 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
         atr_length: int = 14,
         initial_stop_atr: float = 2.5,
         max_breakout_atr: float = 2.5,
+        max_channel_breakout_atr: float | None = None,
         chandelier_lookback: int = 22,
         chandelier_atr: float = 3.0,
         allow_short: bool = True,
         daily_anchor_hour: int = 0,
+        session_break_hours: list[int] | tuple[int, ...] | None = None,
+        sunday_open_hour: int = 23,
+        friday_close_hour: int = 21,
     ) -> None:
         for name, value in (
             ("d1_fast", d1_fast),
@@ -69,10 +77,16 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
             raise ValueError("initial_stop_atr must be > 0.")
         if max_breakout_atr <= 0:
             raise ValueError("max_breakout_atr must be > 0.")
+        if max_channel_breakout_atr is not None and max_channel_breakout_atr <= 0:
+            raise ValueError("max_channel_breakout_atr must be > 0.")
         if chandelier_atr <= 0:
             raise ValueError("chandelier_atr must be > 0.")
-        if not 0 <= daily_anchor_hour <= 23:
-            raise ValueError("daily_anchor_hour must be between 0 and 23.")
+        break_hours = _validate_session_hours(
+            daily_anchor_hour,
+            session_break_hours,
+            sunday_open_hour,
+            friday_close_hour,
+        )
 
         self.d1_fast = d1_fast
         self.d1_slow = d1_slow
@@ -87,10 +101,18 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
         self.atr_length = atr_length
         self.initial_stop_atr = initial_stop_atr
         self.max_breakout_atr = max_breakout_atr
+        self.max_channel_breakout_atr = (
+            max_channel_breakout_atr
+            if max_channel_breakout_atr is not None
+            else max_breakout_atr
+        )
         self.chandelier_lookback = chandelier_lookback
         self.chandelier_atr = chandelier_atr
         self.allow_short = allow_short
         self.daily_anchor_hour = daily_anchor_hour
+        self.session_break_hours = frozenset(break_hours)
+        self.sunday_open_hour = sunday_open_hour
+        self.friday_close_hour = friday_close_hour
         self._position_sides: dict[str, OrderSide] = {}
         self._last_h4_time: dict[str, int] = {}
         self._trailing_stops: dict[str, float] = {}
@@ -128,16 +150,44 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
         self._position_sides.pop(symbol, None)
         self._trailing_stops.pop(symbol, None)
 
+    def persistent_position_state(self, symbol: str) -> dict[str, Any] | None:
+        stop = self._trailing_stops.get(symbol)
+        if stop is None:
+            return None
+        return {"trailing_stop": stop}
+
+    def restore_position_state(
+        self,
+        symbol: str,
+        side: OrderSide,
+        state: dict[str, Any],
+    ) -> None:
+        raw_stop = state.get("trailing_stop")
+        if not isinstance(raw_stop, int | float):
+            raise ValueError(f"{symbol}: persisted trailing_stop must be numeric.")
+        stop = float(raw_stop)
+        if not math.isfinite(stop) or stop <= 0:
+            raise ValueError(f"{symbol}: persisted trailing_stop must be finite and positive.")
+        self._position_sides[symbol] = side
+        self._trailing_stops[symbol] = stop
+
     def on_bar(self, symbol: str, bars: list[MT5Bar]) -> Signal:
         if len(bars) < self.minimum_bars:
             return HOLD
 
-        h4_bars = _aggregate_completed_bars(bars, 4 * 3600, 3600)
+        h4_bars = _aggregate_completed_bars(
+            bars,
+            4 * 3600,
+            3600,
+            expected_slot=self._is_expected_h1_slot,
+        )
         d1_bars = _aggregate_completed_bars(
             bars,
             24 * 3600,
             3600,
             anchor_seconds=self.daily_anchor_hour * 3600,
+            expected_slot=self._is_expected_h1_slot,
+            merge_sunday_into_monday=True,
         )
         if len(h4_bars) < self._minimum_h4_bars or len(d1_bars) < self._minimum_d1_bars:
             return HOLD
@@ -212,12 +262,44 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
             return False
 
         current = bars[-1]
-        if current.high - current.low > self.max_breakout_atr * previous_atr:
+        previous_close = bars[-2].close
+        true_range = max(
+            current.high - current.low,
+            abs(current.high - previous_close),
+            abs(current.low - previous_close),
+        )
+        if true_range > self.max_breakout_atr * previous_atr:
             return False
         channel = bars[-self.breakout_lookback - 1 : -1]
         if side == "buy":
-            return fast > slow and current.close > max(bar.high for bar in channel)
-        return fast < slow and current.close < min(bar.low for bar in channel)
+            boundary = max(bar.high for bar in channel)
+            breakout_distance = current.close - boundary
+            return (
+                fast > slow
+                and breakout_distance > 0
+                and breakout_distance <= self.max_channel_breakout_atr * previous_atr
+            )
+        boundary = min(bar.low for bar in channel)
+        breakout_distance = boundary - current.close
+        return (
+            fast < slow
+            and breakout_distance > 0
+            and breakout_distance <= self.max_channel_breakout_atr * previous_atr
+        )
+
+    def _is_expected_h1_slot(self, timestamp: int) -> bool:
+        current = datetime.fromtimestamp(timestamp, UTC)
+        weekday = current.weekday()
+        hour = current.hour
+        if weekday == 5:
+            return False
+        if weekday == 6:
+            return hour >= self.sunday_open_hour
+        if hour in self.session_break_hours:
+            return False
+        if weekday == 4:
+            return hour < self.friday_close_hour
+        return True
 
     def _entry_signal(self, bars: list[MT5Bar], side: OrderSide) -> Signal:
         atr = _atr_series(bars, self.atr_length)[-1]
@@ -267,3 +349,21 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
             if current_h4.close > stop:
                 return Signal(action="exit", comment="h4 chandelier short exit")
         return None
+
+
+def _validate_session_hours(
+    daily_anchor_hour: int,
+    session_break_hours: list[int] | tuple[int, ...] | None,
+    sunday_open_hour: int,
+    friday_close_hour: int,
+) -> tuple[int, ...]:
+    if not 0 <= daily_anchor_hour <= 23:
+        raise ValueError("daily_anchor_hour must be between 0 and 23.")
+    if not 0 <= sunday_open_hour <= 23:
+        raise ValueError("sunday_open_hour must be between 0 and 23.")
+    if not 0 <= friday_close_hour <= 24:
+        raise ValueError("friday_close_hour must be between 0 and 24.")
+    break_hours = tuple(session_break_hours or (21, 22))
+    if any(not isinstance(hour, int) or not 0 <= hour <= 23 for hour in break_hours):
+        raise ValueError("session_break_hours must contain UTC hours between 0 and 23.")
+    return break_hours

@@ -12,6 +12,7 @@ from freqtrade.mt5_trade.models import (
     MT5BridgeConfig,
     MT5OrderRequest,
     MT5OrderResult,
+    OrderSide,
     normalize_lot_size,
 )
 
@@ -188,6 +189,49 @@ class LazyMT5Gateway:
             return None
         spread = getattr(info, "spread", None)
         return int(spread) if spread is not None else None
+
+    def executable_price(self, symbol: str, side: OrderSide) -> float:
+        """Current ask for buys or bid for sells, using the exact configured MT5 symbol."""
+        mapping = self._config.mapping_for(symbol)
+        self.ensure_connected()
+        tick = self.mt5.symbol_info_tick(mapping.mt5_symbol)
+        if tick is None:
+            raise OperationalException(f"MT5 tick is not available for {mapping.mt5_symbol}.")
+        price = _optional_float(getattr(tick, "ask" if side == "buy" else "bid", None))
+        if price is None or price <= 0:
+            raise OperationalException(
+                f"MT5 executable price is invalid for {mapping.mt5_symbol} {side}."
+            )
+        return price
+
+    def stop_loss_risk(
+        self,
+        symbol: str,
+        side: OrderSide,
+        volume: float,
+        entry_price: float,
+        stop_loss: float,
+    ) -> float:
+        """Loss in account currency if ``volume`` moves from ``entry_price`` to ``stop_loss``."""
+        mapping = self._config.mapping_for(symbol)
+        self.ensure_connected()
+        order_type = getattr(
+            self.mt5,
+            "ORDER_TYPE_BUY" if side == "buy" else "ORDER_TYPE_SELL",
+            0 if side == "buy" else 1,
+        )
+        profit = self.mt5.order_calc_profit(
+            order_type,
+            mapping.mt5_symbol,
+            volume,
+            entry_price,
+            stop_loss,
+        )
+        if profit is None:
+            raise OperationalException(
+                f"MT5 order_calc_profit failed for {mapping.mt5_symbol}: {self.mt5.last_error()}"
+            )
+        return abs(float(profit))
 
     def open_positions(self) -> list[BrokerPosition]:
         """Return the broker's currently open positions (used for reconciliation)."""

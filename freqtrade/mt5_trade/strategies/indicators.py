@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from freqtrade.mt5_trade.data import MT5Bar
 
@@ -47,13 +49,16 @@ def _aggregate_completed_bars(
     source_seconds: int,
     *,
     anchor_seconds: int = 0,
+    expected_slot: Callable[[int], bool] | None = None,
+    merge_sunday_into_monday: bool = False,
 ) -> list[MT5Bar]:
     """
-    Aggregate lower-timeframe bars while excluding an incomplete final bucket.
+    Aggregate lower-timeframe bars only when every expected source slot is present.
 
-    Older buckets are complete once a later bucket exists, even if the market had a scheduled
-    closure and emitted fewer source bars. The latest bucket is included only when its final
-    expected source slot is present.
+    ``expected_slot`` makes completeness session-aware: scheduled closures are excluded from the
+    required slots, while an unexpected missing bar rejects the bucket. For markets with a short
+    Sunday session, ``merge_sunday_into_monday`` folds that fragment into the completed Monday D1
+    candle instead of treating Sunday as a standalone trading day.
     """
     if bucket_seconds < source_seconds or bucket_seconds % source_seconds != 0:
         raise ValueError("bucket_seconds must be a multiple of source_seconds.")
@@ -66,24 +71,45 @@ def _aggregate_completed_bars(
         bucket += anchor_seconds
         buckets.setdefault(bucket, []).append(bar)
 
-    latest_bucket = max(buckets)
-    final_offset = bucket_seconds - source_seconds
-    aggregated: list[MT5Bar] = []
+    aggregated: dict[int, MT5Bar] = {}
     for bucket, items in sorted(buckets.items()):
         ordered = sorted(items, key=lambda item: item.time)
-        if bucket == latest_bucket and ordered[-1].time < bucket + final_offset:
+        actual_slots = {item.time for item in ordered}
+        expected_slots = [
+            timestamp
+            for timestamp in range(bucket, bucket + bucket_seconds, source_seconds)
+            if expected_slot is None or expected_slot(timestamp)
+        ]
+        if not expected_slots or any(timestamp not in actual_slots for timestamp in expected_slots):
             continue
-        aggregated.append(
-            MT5Bar(
-                time=bucket,
-                open=ordered[0].open,
-                high=max(item.high for item in ordered),
-                low=min(item.low for item in ordered),
-                close=ordered[-1].close,
-                volume=sum(item.volume for item in ordered),
-            )
+        aggregated[bucket] = MT5Bar(
+            time=bucket,
+            open=ordered[0].open,
+            high=max(item.high for item in ordered),
+            low=min(item.low for item in ordered),
+            close=ordered[-1].close,
+            volume=sum(item.volume for item in ordered),
         )
-    return aggregated
+
+    if merge_sunday_into_monday:
+        for bucket in list(aggregated):
+            if datetime.fromtimestamp(bucket, UTC).weekday() != 6:
+                continue
+            monday_bucket = bucket + bucket_seconds
+            sunday = aggregated.pop(bucket)
+            monday = aggregated.get(monday_bucket)
+            if monday is None:
+                continue
+            aggregated[monday_bucket] = MT5Bar(
+                time=monday.time,
+                open=sunday.open,
+                high=max(sunday.high, monday.high),
+                low=min(sunday.low, monday.low),
+                close=monday.close,
+                volume=sunday.volume + monday.volume,
+            )
+
+    return [aggregated[bucket] for bucket in sorted(aggregated)]
 
 
 def _atr_series(bars: list[MT5Bar], length: int) -> list[float | None]:

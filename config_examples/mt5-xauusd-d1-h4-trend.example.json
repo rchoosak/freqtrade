@@ -46,10 +46,17 @@
       "atr_length": 14,
       "initial_stop_atr": 2.5,
       "max_breakout_atr": 2.5,
+      "max_channel_breakout_atr": 2.5,
       "chandelier_lookback": 22,
       "chandelier_atr": 3,
       "allow_short": true,
-      "daily_anchor_hour": 0
+      "daily_anchor_hour": 0,
+      "session_break_hours": [
+        21,
+        22
+      ],
+      "sunday_open_hour": 23,
+      "friday_close_hour": 21
     },
     "data_source": {
       "type": "dukascopy",

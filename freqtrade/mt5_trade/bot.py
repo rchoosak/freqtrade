@@ -4,7 +4,8 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from typing import Any
+from decimal import Decimal
+from typing import Any, NoReturn
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar, MT5DataFeed
@@ -189,6 +190,7 @@ class MT5ForexBot:
         self._pending_placed: dict[str, int] = {}
         # symbol -> scale-out bookkeeping for positions opened with a TP1 plan.
         self._managed: dict[str, _Managed] = self._restore_managed(store)
+        self._restore_strategy_position_states()
 
     @staticmethod
     def _restore_managed(store: MT5TradeStore) -> dict[str, _Managed]:
@@ -215,6 +217,32 @@ class MT5ForexBot:
         return managed
 
     @property
+    def _strategy_id(self) -> str:
+        strategy_type = type(self._strategy)
+        return f"{strategy_type.__module__}.{strategy_type.__qualname__}"
+
+    def _restore_strategy_position_states(self) -> None:
+        open_positions = self._store.open_positions()
+        for symbol, state in self._store.strategy_position_states().items():
+            position = open_positions.get(symbol)
+            identity_matches = (
+                position is not None
+                and state.strategy == self._strategy_id
+                and state.side == position.side
+                and position.entry_price is not None
+                and _same_price(state.entry_price, position.entry_price)
+                and state.ticket == position.ticket
+            )
+            if not identity_matches:
+                self._store.clear_strategy_position_state(symbol)
+                continue
+            self._strategy.restore_position_state(
+                symbol,
+                state.side,  # type: ignore[arg-type]
+                state.state,
+            )
+
+    @property
     def running(self) -> bool:
         return self._running
 
@@ -232,6 +260,7 @@ class MT5ForexBot:
             # Scale out before asking the strategy, mirroring the backtester's ordering.
             self._manage_scale_out(symbol, bars[-1])
             signal = self._strategy.on_bar(symbol, bars)
+            self._persist_strategy_position_state(symbol)
             self._handle_signal(symbol, signal, reference_price=bars[-1].close)
         self._expire_pendings()
 
@@ -312,15 +341,20 @@ class MT5ForexBot:
         for symbol, pos in broker.items():
             state = (pos.side, pos.volume)
             identity = (pos.price, pos.ticket)
-            slot_changed = self._positions.get(symbol) != state
+            previous_position = self._positions.get(symbol)
+            slot_changed = previous_position != state
+            side_changed = previous_position is not None and previous_position[0] != state[0]
             identity_changed = _position_identity_changed(self._position_ids.get(symbol), identity)
             ticket_learned = _ticket_learned(self._position_ids.get(symbol), identity)
             if slot_changed or identity_changed or ticket_learned:
-                if identity_changed:
+                if side_changed or identity_changed:
                     self._clear_managed(symbol)
+                    self._clear_strategy_position_state(symbol, reset_strategy=True)
                 self._positions[symbol] = state
                 self._position_ids[symbol] = identity
                 self._store.open_position(symbol, state[0], state[1], pos.price, ticket=pos.ticket)
+                if ticket_learned:
+                    self._persist_strategy_position_state(symbol)
                 changes.append(f"{symbol}->{state[0]} {state[1]}")
         for symbol in list(self._positions):
             if symbol not in broker:
@@ -416,7 +450,21 @@ class MT5ForexBot:
         if current is not None and current[0] == side:
             return signal
 
-        entry_price = signal.price if signal.price is not None else reference_price
+        if signal.order_kind == "market":
+            entry_price = self._executable_entry_price(symbol, side, reference_price)
+        elif signal.price is not None:
+            entry_price = signal.price
+        else:  # Signal validates this invariant, but keep sizing fail-loud if it regresses.
+            raise OperationalException(f"{symbol}: pending entry requires an explicit price.")
+        loss_per_lot = None
+        if self._position_sizer.requires_balance and signal.stop_loss is not None:
+            loss_per_lot = self._stop_loss_risk(
+                symbol,
+                side,
+                1.0,
+                entry_price,
+                signal.stop_loss,
+            )
         decision = self._position_sizer.size_entry(
             symbol=symbol,
             side=side,
@@ -424,6 +472,7 @@ class MT5ForexBot:
             stop_loss=signal.stop_loss,
             balance=self._current_balance(),
             mapping=self._symbol_mappings.get(symbol),
+            loss_per_lot=loss_per_lot,
         )
         if decision.skipped:
             message = decision.reason or f"{symbol}: position sizing skipped entry."
@@ -445,6 +494,52 @@ class MT5ForexBot:
             if broker_balance is not None:
                 return broker_balance
         return self._account_balance
+
+    def _executable_entry_price(
+        self,
+        symbol: str,
+        side: OrderSide,
+        reference_price: float,
+    ) -> float:
+        price_reader = getattr(self._bridge, "executable_price", None)
+        if price_reader is None:
+            return reference_price
+        price = price_reader(symbol, side)
+        if price is None:
+            return reference_price
+        if price <= 0:
+            raise OperationalException(f"{symbol}: executable {side} price must be positive.")
+        return float(price)
+
+    def _stop_loss_risk(
+        self,
+        symbol: str,
+        side: OrderSide,
+        volume: float,
+        entry_price: float,
+        stop_loss: float,
+    ) -> float | None:
+        distance = entry_price - stop_loss if side == "buy" else stop_loss - entry_price
+        if distance <= 0:
+            return None
+        risk_reader = getattr(self._bridge, "stop_loss_risk", None)
+        risk = (
+            risk_reader(symbol, side, volume, entry_price, stop_loss)
+            if risk_reader is not None
+            else None
+        )
+        if risk is None:
+            risk = self._position_sizer.stop_loss_risk(
+                side=side,
+                volume=volume,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+            )
+        if risk <= 0:
+            raise OperationalException(
+                f"{symbol}: broker returned invalid stop-loss risk for {side} {volume} lot."
+            )
+        return float(risk)
 
     def _entry_spread_ok(self, symbol: str) -> bool:
         # Live-only spread gate: skip new entries when the broker spread exceeds the configured
@@ -528,11 +623,19 @@ class MT5ForexBot:
             # Use the broker's actual fill price as the entry (the last-candle close only
             # approximates it); breakeven and bookkeeping then reference the true entry.
             entry_price = result.fill_price if result.fill_price is not None else reference_price
+            self._clear_strategy_position_state(symbol)
             self._positions[symbol] = (intent.side, volume)
             self._position_ids[symbol] = (entry_price, None)
             self._store.open_position(symbol, intent.side, volume, entry_price, ticket=None)
             self._protect_entry_sltp(symbol, signal)
             entry_price = self._position_ids.get(symbol, (entry_price, None))[0] or entry_price
+            if not self._enforce_filled_risk(
+                symbol,
+                intent.side,
+                entry_price,
+                signal.stop_loss,
+            ):
+                return True
             self._register_scale_out(symbol, intent, entry_price)
         else:
             self._positions.pop(symbol, None)
@@ -541,9 +644,12 @@ class MT5ForexBot:
             self._store.close_position(symbol)
             self._strategy.on_position_closed(symbol)
 
-        self._notify(
-            f"{intent.reason} {intent.side} {symbol} {intent.volume} ({result.order_id})"
+        final_volume = (
+            self._positions.get(symbol, (intent.side, intent.volume))[1]
+            if is_open
+            else intent.volume
         )
+        self._notify(f"{intent.reason} {intent.side} {symbol} {final_volume} ({result.order_id})")
         return True
 
     def _close_intent_matches_current_position(self, symbol: str, intent: OrderIntent) -> bool:
@@ -566,7 +672,286 @@ class MT5ForexBot:
         if not self._apply_sltp(symbol, signal, position_ticket=position_ticket):
             self._abort_unprotected_entry(symbol, "SL/TP modify failed after market entry")
 
-    def _abort_unprotected_entry(self, symbol: str, reason: str) -> None:
+    def _enforce_filled_risk(
+        self,
+        symbol: str,
+        side: OrderSide,
+        entry_price: float,
+        stop_loss: float | None,
+    ) -> bool:
+        """Reduce a filled entry when slippage makes its broker-calculated stop risk too large."""
+        if not self._position_sizer.requires_balance or stop_loss is None:
+            return True
+        position = self._positions.get(symbol)
+        balance = self._current_balance()
+        if position is None or balance is None:
+            return True
+
+        current_side, volume = position
+        if current_side != side:
+            self._abort_overrisk_entry(
+                symbol,
+                "position side changed before post-fill risk validation",
+            )
+        actual_risk = self._filled_stop_loss_risk_or_close(
+            symbol,
+            side,
+            volume,
+            entry_price,
+            stop_loss,
+        )
+        if actual_risk is None:
+            return False
+        budget = self._position_sizer.risk_budget(balance)
+        if actual_risk <= budget + max(0.01, budget * 1e-9):
+            return True
+
+        close_volume = self._risk_reduction_volume(
+            symbol,
+            side,
+            volume,
+            entry_price,
+            stop_loss,
+            balance,
+            actual_risk,
+        )
+
+        refreshed = self._resolved_position_for_risk_close(
+            symbol,
+            side,
+            "risk cap reduction",
+        )
+        if refreshed is None:
+            return False
+        refreshed_volume, position_ticket = refreshed
+        if not _same_volume(refreshed_volume, volume):
+            refreshed_entry = self._position_ids.get(symbol, (entry_price, None))[0] or entry_price
+            return self._enforce_filled_risk(
+                symbol,
+                side,
+                refreshed_entry,
+                stop_loss,
+            )
+        remaining = self._submit_risk_reduction(
+            symbol,
+            side,
+            volume,
+            close_volume,
+            position_ticket,
+        )
+        if remaining <= 0:
+            return False
+
+        residual_risk = self._filled_stop_loss_risk_or_close(
+            symbol,
+            side,
+            remaining,
+            entry_price,
+            stop_loss,
+        )
+        if residual_risk is None:
+            return False
+        if residual_risk <= budget + max(0.01, budget * 1e-9):
+            return True
+
+        # Broker normalization or a partial fill can leave the position above budget. Flatten it
+        # rather than carrying exposure that contradicts the configured hard cap.
+        remaining = self._submit_risk_reduction(
+            symbol,
+            side,
+            remaining,
+            remaining,
+            position_ticket,
+        )
+        if remaining > 0:
+            self._abort_overrisk_entry(
+                symbol,
+                "position remained above the risk cap after emergency close",
+            )
+        return False
+
+    def _risk_reduction_volume(
+        self,
+        symbol: str,
+        side: OrderSide,
+        volume: float,
+        entry_price: float,
+        stop_loss: float,
+        balance: float,
+        actual_risk: float,
+    ) -> float:
+        safe = self._position_sizer.size_entry(
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            balance=balance,
+            mapping=self._symbol_mappings.get(symbol),
+            loss_per_lot=actual_risk / volume,
+        )
+        safe_volume = safe.volume or 0.0
+        close_volume = (
+            volume
+            if safe_volume <= 0
+            else float(Decimal(str(volume)) - Decimal(str(safe_volume)))
+        )
+        mapping = self._symbol_mappings.get(symbol)
+        return (
+            volume
+            if mapping is not None and close_volume < mapping.min_lot
+            else close_volume
+        )
+
+    def _filled_stop_loss_risk_or_close(
+        self,
+        symbol: str,
+        side: OrderSide,
+        volume: float,
+        entry_price: float,
+        stop_loss: float,
+    ) -> float | None:
+        try:
+            risk = self._stop_loss_risk(
+                symbol,
+                side,
+                volume,
+                entry_price,
+                stop_loss,
+            )
+            if risk is None:
+                raise OperationalException("stop is no longer beyond the filled entry price")
+            return risk
+        except Exception as exc:
+            self._close_unverifiable_risk(symbol, side, volume, exc)
+            return None
+
+    def _close_unverifiable_risk(
+        self,
+        symbol: str,
+        side: OrderSide,
+        volume: float,
+        error: Exception,
+    ) -> bool:
+        self._notify(f"risk validation failed for {symbol}: {error}; closing full position")
+        refreshed = self._resolved_position_for_risk_close(
+            symbol,
+            side,
+            f"unverifiable risk ({error})",
+        )
+        if refreshed is None:
+            return False
+        refreshed_volume, position_ticket = refreshed
+        remaining = self._submit_risk_reduction(
+            symbol,
+            side,
+            refreshed_volume,
+            refreshed_volume,
+            position_ticket,
+        )
+        if remaining > 0:
+            self._abort_overrisk_entry(
+                symbol,
+                f"risk could not be calculated ({error}) and emergency close was partial",
+            )
+        return False
+
+    def _resolved_position_for_risk_close(
+        self,
+        symbol: str,
+        expected_side: OrderSide,
+        reason: str,
+    ) -> tuple[float, int | None] | None:
+        ticket_ok, position_ticket = self._resolve_position_ticket(symbol, reason)
+        if not ticket_ok:
+            self._abort_overrisk_entry(
+                symbol,
+                f"position ticket lookup failed during {reason}",
+            )
+        position = self._positions.get(symbol)
+        if position is None:
+            return None
+        side, volume = position
+        if side != expected_side:
+            self._abort_overrisk_entry(
+                symbol,
+                f"position side changed during {reason}",
+            )
+        return volume, position_ticket
+
+    def _submit_risk_reduction(
+        self,
+        symbol: str,
+        side: OrderSide,
+        current_volume: float,
+        close_volume: float,
+        position_ticket: int | None,
+    ) -> float:
+        close_side: OrderSide = "sell" if side == "buy" else "buy"
+        self._order_seq += 1
+        order = MT5OrderRequest(
+            symbol=symbol,
+            side=close_side,
+            volume=close_volume,
+            position_ticket=position_ticket,
+            client_order_id=f"{symbol}-risk-{self._order_seq}",
+            comment="risk cap reduction",
+        )
+        try:
+            result = self._bridge.submit_order(order)
+        except Exception as exc:
+            self._abort_overrisk_entry(
+                symbol,
+                f"emergency risk close raised an exception: {exc}",
+            )
+        self._store.record_order(order, result)
+        if not result.accepted and close_volume < current_volume:
+            self._notify(
+                f"risk reduction {symbol} {close_volume} rejected; closing full position"
+            )
+            return self._submit_risk_reduction(
+                symbol,
+                side,
+                current_volume,
+                current_volume,
+                position_ticket,
+            )
+        if not result.accepted:
+            self._abort_overrisk_entry(
+                symbol,
+                f"emergency risk close rejected: {result.message}",
+            )
+
+        closed = min(current_volume, _resolved_volume(result, close_volume))
+        if closed <= 0:
+            self._abort_overrisk_entry(symbol, "emergency risk close filled zero volume")
+        remaining = max(
+            0.0,
+            float(Decimal(str(current_volume)) - Decimal(str(closed))),
+        )
+        entry_price, ticket = self._position_ids.get(symbol, (None, position_ticket))
+        if remaining <= 1e-12:
+            self._positions.pop(symbol, None)
+            self._position_ids.pop(symbol, None)
+            self._clear_managed(symbol)
+            self._store.close_position(symbol)
+            self._strategy.on_position_closed(symbol)
+            self._notify(f"closed {symbol}: filled entry exceeded risk cap")
+            return 0.0
+
+        self._positions[symbol] = (side, remaining)
+        self._position_ids[symbol] = (entry_price, ticket)
+        self._store.open_position(symbol, side, remaining, entry_price, ticket=ticket)
+        self._notify(f"reduced {symbol} by {closed} lot to enforce risk cap; remaining {remaining}")
+        return remaining
+
+    def _abort_overrisk_entry(self, symbol: str, reason: str) -> NoReturn:
+        self._running = False
+        message = f"{reason}: {symbol}; bot stopped because live exposure may exceed its risk cap."
+        logger.error(message)
+        self._notify(message)
+        raise OperationalException(message)
+
+    def _abort_unprotected_entry(self, symbol: str, reason: str) -> NoReturn:
         self._clear_managed(symbol)
         self._running = False
         message = (
@@ -671,6 +1056,36 @@ class MT5ForexBot:
     def _clear_managed(self, symbol: str) -> None:
         self._managed.pop(symbol, None)
         self._store.clear_managed_position(symbol)
+
+    def _persist_strategy_position_state(self, symbol: str) -> None:
+        position = self._positions.get(symbol)
+        identity = self._position_ids.get(symbol)
+        state = self._strategy.persistent_position_state(symbol)
+        if position is None or identity is None or state is None:
+            self._store.clear_strategy_position_state(symbol)
+            return
+        entry_price, ticket = identity
+        if entry_price is None:
+            self._store.clear_strategy_position_state(symbol)
+            return
+        self._store.set_strategy_position_state(
+            symbol,
+            self._strategy_id,
+            position[0],
+            entry_price,
+            ticket,
+            state,
+        )
+
+    def _clear_strategy_position_state(
+        self,
+        symbol: str,
+        *,
+        reset_strategy: bool = False,
+    ) -> None:
+        self._store.clear_strategy_position_state(symbol)
+        if reset_strategy:
+            self._strategy.on_position_closed(symbol)
 
     def _manage_scale_out(self, symbol: str, bar: MT5Bar) -> None:
         """Close the TP1 fraction and move the stop to breakeven once price reaches TP1."""

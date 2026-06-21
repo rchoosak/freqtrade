@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from freqtrade.mt5_trade.models import MT5OrderRequest, MT5OrderResult
 
@@ -25,6 +27,16 @@ class ManagedPosition:
     close_fraction: float
     move_be: bool
     scaled: bool
+
+
+@dataclass(frozen=True)
+class StrategyPositionState:
+    symbol: str
+    strategy: str
+    side: str
+    entry_price: float
+    ticket: int | None
+    state: dict[str, Any]
 
 
 class MT5TradeStore:
@@ -76,6 +88,15 @@ class MT5TradeStore:
                 close_fraction REAL NOT NULL,
                 move_be INTEGER NOT NULL,
                 scaled INTEGER NOT NULL,
+                updated_ts REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS mt5_strategy_position_state (
+                symbol TEXT PRIMARY KEY,
+                strategy TEXT NOT NULL,
+                side TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                ticket INTEGER,
+                state_json TEXT NOT NULL,
                 updated_ts REAL NOT NULL
             );
             """
@@ -141,6 +162,7 @@ class MT5TradeStore:
     def close_position(self, symbol: str) -> None:
         self._conn.execute("DELETE FROM mt5_positions WHERE symbol = ?", (symbol,))
         self.clear_managed_position(symbol)
+        self.clear_strategy_position_state(symbol)
         self._conn.commit()
 
     def open_positions(self) -> dict[str, OpenPosition]:
@@ -221,6 +243,62 @@ class MT5TradeStore:
             )
             for row in rows
         }
+
+    def set_strategy_position_state(
+        self,
+        symbol: str,
+        strategy: str,
+        side: str,
+        entry_price: float,
+        ticket: int | None,
+        state: dict[str, Any],
+    ) -> None:
+        payload = json.dumps(state, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        self._conn.execute(
+            """
+            INSERT INTO mt5_strategy_position_state
+                (symbol, strategy, side, entry_price, ticket, state_json, updated_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                strategy=excluded.strategy,
+                side=excluded.side,
+                entry_price=excluded.entry_price,
+                ticket=excluded.ticket,
+                state_json=excluded.state_json,
+                updated_ts=excluded.updated_ts
+            """,
+            (symbol, strategy, side, entry_price, ticket, payload, time.time()),
+        )
+        self._conn.commit()
+
+    def clear_strategy_position_state(self, symbol: str) -> None:
+        self._conn.execute(
+            "DELETE FROM mt5_strategy_position_state WHERE symbol = ?",
+            (symbol,),
+        )
+        self._conn.commit()
+
+    def strategy_position_states(self) -> dict[str, StrategyPositionState]:
+        rows = self._conn.execute(
+            """
+            SELECT symbol, strategy, side, entry_price, ticket, state_json
+            FROM mt5_strategy_position_state
+            """
+        ).fetchall()
+        states: dict[str, StrategyPositionState] = {}
+        for row in rows:
+            state = json.loads(row["state_json"])
+            if not isinstance(state, dict):
+                continue
+            states[row["symbol"]] = StrategyPositionState(
+                symbol=row["symbol"],
+                strategy=row["strategy"],
+                side=row["side"],
+                entry_price=row["entry_price"],
+                ticket=row["ticket"],
+                state=state,
+            )
+        return states
 
     def close(self) -> None:
         self._conn.close()

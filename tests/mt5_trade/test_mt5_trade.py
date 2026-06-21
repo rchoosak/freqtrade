@@ -74,6 +74,11 @@ class FakeMT5:
         assert symbol == "EURUSD"
         return SimpleNamespace(volume_min=0.01, volume_max=100.0, volume_step=0.01)
 
+    def order_calc_profit(self, order_type, symbol, volume, price_open, price_close):
+        assert symbol == "EURUSD"
+        direction = 1 if order_type == self.ORDER_TYPE_BUY else -1
+        return direction * (price_close - price_open) * volume * 100_000
+
     def order_send(self, request):
         self.request = request
         return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE, order=12345, comment="filled")
@@ -686,8 +691,21 @@ def test_gateway_account_equity(bridge_config: MT5BridgeConfig) -> None:
     assert gateway.account_equity() == 1200.25
 
 
+def test_gateway_uses_executable_price_and_order_calc_profit(
+    bridge_config: MT5BridgeConfig,
+) -> None:
+    live_config = MT5BridgeConfig(symbols=bridge_config.symbols, dry_run=False)
+    gateway = LazyMT5Gateway(live_config, mt5_module=FakeMT5())
+
+    assert gateway.executable_price("EURUSD", "buy") == 1.08501
+    assert gateway.executable_price("EURUSD", "sell") == 1.08499
+    assert gateway.stop_loss_risk("EURUSD", "buy", 0.1, 1.085, 1.08) == pytest.approx(50)
+    assert gateway.stop_loss_risk("EURUSD", "sell", 0.1, 1.085, 1.09) == pytest.approx(50)
+
+
 def test_bridge_account_balance_is_none_in_dry_run(bridge_config: MT5BridgeConfig) -> None:
     bridge = MT5ExecutionBridge(bridge_config)  # dry_run=True
 
     assert bridge.account_balance() is None
     assert bridge.account_equity() is None
+    assert bridge.executable_price("EURUSD", "buy") is None

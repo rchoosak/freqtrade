@@ -78,3 +78,29 @@ def test_store_clears_managed_position_with_position() -> None:
 
     assert store.open_positions() == {}
     assert store.managed_positions() == {}
+
+
+def test_store_persists_strategy_position_state_with_identity(tmp_path) -> None:
+    db_path = str(tmp_path / "trades.sqlite")
+    store = MT5TradeStore(db_path)
+    store.open_position("XAUUSD", "buy", 0.1, 2350.0, ticket=42)
+    store.set_strategy_position_state(
+        "XAUUSD",
+        "example.Strategy",
+        "buy",
+        2350.0,
+        42,
+        {"trailing_stop": 2400.0},
+    )
+    store.close()
+
+    reopened = MT5TradeStore(db_path)
+    state = reopened.strategy_position_states()["XAUUSD"]
+    assert state.strategy == "example.Strategy"
+    assert state.side == "buy"
+    assert state.entry_price == 2350.0
+    assert state.ticket == 42
+    assert state.state == {"trailing_stop": 2400.0}
+
+    reopened.close_position("XAUUSD")
+    assert reopened.strategy_position_states() == {}

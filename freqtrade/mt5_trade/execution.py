@@ -7,6 +7,7 @@ from freqtrade.mt5_trade.models import (
     MT5BridgeConfig,
     MT5OrderRequest,
     MT5OrderResult,
+    OrderSide,
     normalize_lot_size,
 )
 
@@ -101,6 +102,31 @@ class MT5ExecutionBridge:
         if self._config.dry_run:
             return None
         return self._gateway.symbol_spread_points(symbol)
+
+    def executable_price(self, symbol: str, side: OrderSide) -> float | None:
+        """Current executable market price, or None when replay/dry-run uses candle prices."""
+        if self._config.dry_run:
+            return None
+        return self._gateway.executable_price(symbol, side)
+
+    def stop_loss_risk(
+        self,
+        symbol: str,
+        side: OrderSide,
+        volume: float,
+        entry_price: float,
+        stop_loss: float,
+    ) -> float | None:
+        """Stop-loss exposure in account currency, or None when dry-run uses local sizing math."""
+        if self._config.dry_run:
+            return None
+        return self._gateway.stop_loss_risk(
+            symbol,
+            side,
+            volume,
+            entry_price,
+            stop_loss,
+        )
 
     def broker_orders(self) -> list[BrokerOrder] | None:
         """Resting pending orders from the broker, or None in dry-run (nothing to reconcile)."""

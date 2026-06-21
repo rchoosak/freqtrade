@@ -191,3 +191,174 @@ def test_bot_risk_percent_prefers_live_equity_over_balance() -> None:
     # Equity 1200 includes floating losses and is safer than balance 2000:
     # 1200 * 1% / (5 * 100) = 0.024, floored to 0.02 lot.
     assert bridge.orders[0].volume == 0.02
+
+
+class SlippageRiskBridge(FakeBridge):
+    def __init__(self, *, executable_price: float, fill_price: float) -> None:
+        super().__init__()
+        self._executable_price = executable_price
+        self._fill_price = fill_price
+
+    def executable_price(self, symbol, side):
+        return self._executable_price
+
+    def stop_loss_risk(self, symbol, side, volume, entry_price, stop_loss):
+        distance = entry_price - stop_loss if side == "buy" else stop_loss - entry_price
+        return max(0.0, distance) * volume * 100
+
+    def submit_order(self, order):
+        self.orders.append(order)
+        if len(self.orders) == 1:
+            return MT5OrderResult(
+                accepted=True,
+                order_id="entry",
+                filled_volume=order.volume,
+                fill_price=self._fill_price,
+            )
+        return MT5OrderResult(
+            accepted=True,
+            order_id="reduce",
+            filled_volume=order.volume,
+            fill_price=self._fill_price,
+        )
+
+
+def test_bot_sizes_market_entry_from_executable_quote() -> None:
+    bridge = SlippageRiskBridge(executable_price=110, fill_price=110)
+    store = MT5TradeStore(":memory:")
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=1, poll_interval=1.0)
+    feed = ReplayDataFeed(
+        {"EURUSD": [MT5Bar(time=0, open=100, high=100, low=100, close=100)]}
+    )
+    sizer = PositionSizer(
+        mode="risk_percent",
+        risk_per_trade=1.0,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+    )
+    bot = MT5ForexBot(
+        bridge,
+        feed,
+        ScriptedStrategy([Signal("enter_long", stop_loss=90)]),
+        store,
+        cfg,
+        position_sizer=sizer,
+        account_balance=10_000,
+    )
+
+    bot.run_once()
+
+    # $100 risk / (($110 executable - $90 stop) * 100) = 0.05 lot.
+    assert bridge.orders[0].volume == 0.05
+    assert len(bridge.orders) == 1
+
+
+def test_bot_reduces_position_when_fill_exceeds_risk_cap() -> None:
+    bridge = SlippageRiskBridge(executable_price=100, fill_price=110)
+    store = MT5TradeStore(":memory:")
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=1, poll_interval=1.0)
+    feed = ReplayDataFeed(
+        {"EURUSD": [MT5Bar(time=0, open=100, high=100, low=100, close=100)]}
+    )
+    sizer = PositionSizer(
+        mode="risk_percent",
+        risk_per_trade=0.75,
+        capital_fraction=0.9,
+        max_risk_amount=750,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+        max_lot=0.5,
+    )
+    bot = MT5ForexBot(
+        bridge,
+        feed,
+        ScriptedStrategy([Signal("enter_long", stop_loss=90)]),
+        store,
+        cfg,
+        position_sizer=sizer,
+        account_balance=100_000,
+    )
+
+    bot.run_once()
+
+    assert bridge.orders[0].volume == 0.5
+    assert bridge.orders[1].side == "sell"
+    assert bridge.orders[1].volume == 0.17
+    assert store.open_positions()["EURUSD"].volume == 0.33
+    assert bridge.stop_loss_risk("EURUSD", "buy", 0.33, 110, 90) == 660
+
+
+def test_bot_closes_fill_when_broker_minimum_cannot_meet_risk_cap() -> None:
+    bridge = SlippageRiskBridge(executable_price=100, fill_price=1000)
+    store = MT5TradeStore(":memory:")
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=1, poll_interval=1.0)
+    feed = ReplayDataFeed(
+        {"EURUSD": [MT5Bar(time=0, open=100, high=100, low=100, close=100)]}
+    )
+    sizer = PositionSizer(
+        mode="risk_percent",
+        risk_per_trade=0.75,
+        capital_fraction=0.9,
+        max_risk_amount=750,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+        max_lot=0.5,
+    )
+    bot = MT5ForexBot(
+        bridge,
+        feed,
+        ScriptedStrategy([Signal("enter_long", stop_loss=90)]),
+        store,
+        cfg,
+        position_sizer=sizer,
+        account_balance=100_000,
+    )
+
+    bot.run_once()
+
+    assert bridge.orders[1].side == "sell"
+    assert bridge.orders[1].volume == 0.5
+    assert store.open_positions() == {}
+
+
+class UnverifiableFillRiskBridge(SlippageRiskBridge):
+    def stop_loss_risk(self, symbol, side, volume, entry_price, stop_loss):
+        if entry_price == self._fill_price:
+            raise RuntimeError("order_calc_profit unavailable")
+        return super().stop_loss_risk(symbol, side, volume, entry_price, stop_loss)
+
+
+def test_bot_closes_fill_when_post_fill_risk_cannot_be_calculated() -> None:
+    bridge = UnverifiableFillRiskBridge(executable_price=100, fill_price=110)
+    store = MT5TradeStore(":memory:")
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=1, poll_interval=1.0)
+    feed = ReplayDataFeed(
+        {"EURUSD": [MT5Bar(time=0, open=100, high=100, low=100, close=100)]}
+    )
+    sizer = PositionSizer(
+        mode="risk_percent",
+        risk_per_trade=0.75,
+        capital_fraction=0.9,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+        max_lot=0.5,
+    )
+    bot = MT5ForexBot(
+        bridge,
+        feed,
+        ScriptedStrategy([Signal("enter_long", stop_loss=90)]),
+        store,
+        cfg,
+        position_sizer=sizer,
+        account_balance=100_000,
+    )
+
+    bot.run_once()
+
+    assert bridge.orders[1].side == "sell"
+    assert bridge.orders[1].volume == 0.5
+    assert store.open_positions() == {}

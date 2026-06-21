@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from freqtrade.exceptions import OperationalException
 from freqtrade.mt5_trade.data import MT5Bar
@@ -90,6 +90,18 @@ class MT5Strategy(ABC):
         side: OrderSide | None,
     ) -> None:
         """Provide the current open-position side before evaluating the next completed bar."""
+
+    def persistent_position_state(self, symbol: str) -> dict[str, Any] | None:
+        """Return durable state tied to the current position, or None when nothing is persisted."""
+        return None
+
+    def restore_position_state(  # noqa: B027  # optional override
+        self,
+        symbol: str,
+        side: OrderSide,
+        state: dict[str, Any],
+    ) -> None:
+        """Restore durable state after the bot validates the stored position identity."""
 
 
 def validate_strategy_runtime(

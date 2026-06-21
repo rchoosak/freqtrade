@@ -105,6 +105,7 @@ class PositionSizer:
         stop_loss: float | None,
         balance: float | None,
         mapping: MT5SymbolMapping | None = None,
+        loss_per_lot: float | None = None,
     ) -> SizingDecision:
         min_lot = self.min_lot if self.min_lot is not None else _mapping_min_lot(mapping)
         lot_step = self.lot_step if self.lot_step is not None else _mapping_lot_step(mapping)
@@ -125,13 +126,18 @@ class PositionSizer:
                 f"{symbol}: stop_loss must be beyond entry price for {side} risk sizing.",
             )
 
-        risk_capital = balance * self.capital_fraction
-        risk_amount = risk_capital * self.risk_per_trade / 100
-        if self.max_risk_amount is not None:
-            risk_amount = min(risk_amount, self.max_risk_amount)
-        raw_volume = risk_amount / (stop_distance * self.contract_size)
+        risk_amount = self.risk_budget(balance)
+        if loss_per_lot is not None and loss_per_lot <= 0:
+            return SizingDecision(
+                None,
+                f"{symbol}: broker stop-loss risk per lot must be positive.",
+            )
+        per_lot_risk = (
+            loss_per_lot if loss_per_lot is not None else stop_distance * self.contract_size
+        )
+        raw_volume = risk_amount / per_lot_risk
         if raw_volume < min_lot and self.skip_if_min_lot_exceeds_risk:
-            actual_risk = min_lot * stop_distance * self.contract_size
+            actual_risk = min_lot * per_lot_risk
             return SizingDecision(
                 None,
                 (
@@ -144,6 +150,22 @@ class PositionSizer:
         if max_lot is not None:
             requested = min(requested, max_lot)
         return self._normalize(requested, min_lot, lot_step, max_lot, symbol)
+
+    def risk_budget(self, balance: float) -> float:
+        risk_amount = balance * self.capital_fraction * self.risk_per_trade / 100
+        if self.max_risk_amount is not None:
+            risk_amount = min(risk_amount, self.max_risk_amount)
+        return risk_amount
+
+    def stop_loss_risk(
+        self,
+        *,
+        side: OrderSide,
+        volume: float,
+        entry_price: float,
+        stop_loss: float,
+    ) -> float:
+        return _risk_stop_distance(side, entry_price, stop_loss) * self.contract_size * volume
 
     def snap(
         self,
