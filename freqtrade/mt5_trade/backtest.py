@@ -386,14 +386,16 @@ def _size_signal(
     side = entry_side_for_action(signal.action)
     if side is None:
         return signal
+    if current is not None and current[0] == side:
+        return signal
+    if position_sizer.requires_balance and signal.order_kind != "market":
+        return None
     if signal.volume is not None:
         # Explicit volume still has to obey the broker lot rules (same as the live bot).
         decision = position_sizer.snap(signal.volume, symbol=symbol, mapping=mapping)
         if decision.skipped:
             return None
         return replace(signal, volume=decision.volume)
-    if current is not None and current[0] == side:
-        return signal
 
     entry_price = signal.price if signal.price is not None else reference_price
     decision = position_sizer.size_entry(

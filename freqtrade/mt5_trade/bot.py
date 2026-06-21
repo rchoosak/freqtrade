@@ -436,6 +436,16 @@ class MT5ForexBot:
         side = entry_side_for_action(signal.action)
         if side is None:
             return signal
+        if current is not None and current[0] == side:
+            return signal
+        if self._position_sizer.requires_balance and signal.order_kind != "market":
+            message = (
+                f"{symbol}: risk_percent sizing supports market entries only; "
+                f"{signal.order_kind} entry skipped."
+            )
+            logger.warning(message)
+            self._notify(message)
+            return None
         if signal.volume is not None:
             # Explicit volume still has to obey the broker lot rules before we track it.
             decision = self._position_sizer.snap(
@@ -447,8 +457,6 @@ class MT5ForexBot:
                 self._notify(message)
                 return None
             return replace(signal, volume=decision.volume)
-        if current is not None and current[0] == side:
-            return signal
 
         if signal.order_kind == "market":
             entry_price = self._executable_entry_price(symbol, side, reference_price)
@@ -638,6 +646,29 @@ class MT5ForexBot:
                 return True
             self._register_scale_out(symbol, intent, entry_price)
         else:
+            filled = _resolved_volume(result, intent.volume)
+            if filled < intent.volume and not _same_volume(filled, intent.volume):
+                remaining = float(
+                    Decimal(str(intent.volume)) - Decimal(str(max(0.0, filled)))
+                )
+                open_side = _open_side_for_close(intent.side)
+                stored_entry_price, ticket = self._position_ids.get(
+                    symbol, (None, position_ticket)
+                )
+                self._positions[symbol] = (open_side, remaining)
+                self._position_ids[symbol] = (stored_entry_price, ticket)
+                self._store.open_position(
+                    symbol,
+                    open_side,
+                    remaining,
+                    stored_entry_price,
+                    ticket=ticket,
+                )
+                self._notify(
+                    f"{intent.reason} partially closed {symbol} by {filled}; "
+                    f"remaining {remaining}"
+                )
+                return False
             self._positions.pop(symbol, None)
             self._position_ids.pop(symbol, None)
             self._clear_managed(symbol)

@@ -144,6 +144,34 @@ def test_chandelier_stop_ratchets_and_exits_on_reversal() -> None:
     assert strategy._trailing_stops["XAUUSD"] == ratcheted_stop
 
 
+def test_chandelier_exit_retries_on_same_h4_candle() -> None:
+    strategy = _strategy()
+    bars = _h1_trend(0.5)
+    assert strategy.on_bar("XAUUSD", bars).action == "enter_long"
+    strategy.on_position_state("XAUUSD", "buy")
+    bars = _append_h1(bars, [0.5] * 4)
+    assert strategy.on_bar("XAUUSD", bars).action == "hold"
+    bars = _append_h1(bars, [-3.0] * 4)
+
+    assert strategy.on_bar("XAUUSD", bars).action == "exit"
+    assert strategy.on_bar("XAUUSD", bars).action == "exit"
+    strategy.on_position_closed("XAUUSD")
+    assert strategy.on_bar("XAUUSD", bars).action == "hold"
+
+
+def test_open_position_without_exit_is_evaluated_once_per_h4() -> None:
+    strategy = _strategy()
+    bars = _h1_trend(0.5)
+    assert strategy.on_bar("XAUUSD", bars).action == "enter_long"
+    strategy.on_position_state("XAUUSD", "buy")
+    bars = _append_h1(bars, [0.5] * 4)
+
+    assert strategy.on_bar("XAUUSD", bars).action == "hold"
+    trailing_stop = strategy._trailing_stops["XAUUSD"]
+    assert strategy.on_bar("XAUUSD", bars).action == "hold"
+    assert strategy._trailing_stops["XAUUSD"] == trailing_stop
+
+
 def test_restored_chandelier_stop_cannot_loosen() -> None:
     strategy = _strategy()
     strategy.restore_position_state("XAUUSD", "buy", {"trailing_stop": 118.0})
@@ -319,6 +347,79 @@ def test_sunday_fragment_is_merged_into_completed_monday() -> None:
     assert aggregated[0].open == 99
     assert aggregated[0].close == 101
     assert aggregated[0].volume == 23
+
+
+def test_non_midnight_anchor_does_not_merge_full_monday_session() -> None:
+    strategy = _strategy(daily_anchor_hour=22)
+    sunday = int(datetime(2025, 1, 5, 22, tzinfo=UTC).timestamp())
+    bars = [
+        MT5Bar(
+            time=sunday + hour * 3600,
+            open=100 + hour,
+            high=101 + hour,
+            low=99 + hour,
+            close=100.5 + hour,
+            volume=1,
+        )
+        for hour in range(50)
+        if strategy._is_expected_h1_slot(sunday + hour * 3600)
+    ]
+
+    aggregated = _aggregate_completed_bars(
+        bars,
+        24 * 3600,
+        3600,
+        anchor_seconds=22 * 3600,
+        expected_slot=strategy._is_expected_h1_slot,
+        merge_sunday_into_monday=True,
+    )
+
+    assert len(aggregated) == 2
+    assert aggregated[0].time == sunday
+    assert aggregated[0].volume == 22
+
+
+def test_latest_short_friday_bucket_waits_for_next_session() -> None:
+    strategy = _strategy()
+    friday = int(datetime(2025, 1, 3, 20, tzinfo=UTC).timestamp())
+    bars = [
+        MT5Bar(time=friday, open=100, high=101, low=99, close=100, volume=1),
+        MT5Bar(time=friday + 3600, open=100, high=102, low=99, close=101, volume=1),
+    ]
+
+    before_next_session = _aggregate_completed_bars(
+        bars,
+        4 * 3600,
+        3600,
+        expected_slot=strategy._is_expected_h1_slot,
+    )
+    bars.append(
+        MT5Bar(
+            time=int(datetime(2025, 1, 5, 23, tzinfo=UTC).timestamp()),
+            open=102,
+            high=103,
+            low=101,
+            close=102,
+            volume=1,
+        )
+    )
+    after_next_session = _aggregate_completed_bars(
+        bars,
+        4 * 3600,
+        3600,
+        expected_slot=strategy._is_expected_h1_slot,
+    )
+
+    assert before_next_session == []
+    assert len(after_next_session) == 2
+    assert after_next_session[0].high == 102
+    assert after_next_session[0].close == 101
+
+
+def test_empty_session_break_hours_disables_daily_break_filter() -> None:
+    strategy = _strategy(session_break_hours=[])
+
+    assert strategy.session_break_hours == frozenset()
 
 
 def test_bot_restores_chandelier_stop_only_for_same_position_identity() -> None:

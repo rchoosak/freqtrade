@@ -37,6 +37,14 @@ class RejectCloseBridge:
         self.closed = True
 
 
+class PartialCloseBridge(RejectCloseBridge):
+    def submit_order(self, order):
+        self.orders.append(order)
+        if len(self.orders) == 1:
+            return MT5OrderResult(accepted=True, order_id="partial", filled_volume=0.4)
+        return MT5OrderResult(accepted=True, order_id="open", filled_volume=order.volume)
+
+
 class ScriptedStrategy(MT5Strategy):
     def __init__(self, signals: list[Signal]) -> None:
         self._signals = list(signals)
@@ -68,6 +76,18 @@ def test_market_reversal_does_not_open_opposite_when_close_rejected() -> None:
     assert bridge.orders[0].volume == 1.0
     # Position is unchanged because the close failed.
     assert bot._positions["EURUSD"] == ("buy", 1.0)
+
+
+def test_market_reversal_does_not_open_opposite_after_partial_close() -> None:
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 1.0, 1.10)
+    bridge = PartialCloseBridge()
+    bot = _bot(bridge, ScriptedStrategy([Signal("enter_short")]), store)
+
+    bot.run_once()
+
+    assert len(bridge.orders) == 1
+    assert bot._positions["EURUSD"] == ("buy", 0.6)
 
 
 def test_pending_reversal_does_not_open_opposite_when_cancel_rejected() -> None:

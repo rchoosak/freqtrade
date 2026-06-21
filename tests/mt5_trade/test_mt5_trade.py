@@ -33,6 +33,7 @@ class FakeMT5:
     SYMBOL_FILLING_FOK = 1
     SYMBOL_FILLING_IOC = 2
     TRADE_RETCODE_DONE = 10009
+    TRADE_RETCODE_DONE_PARTIAL = 10010
     TRADE_RETCODE_PLACED = 10008
     TRADE_ACTION_SLTP = 6
     TRADE_ACTION_REMOVE = 8
@@ -670,6 +671,31 @@ def test_gateway_order_send_rejects_on_broker_normalization_error(
 
     assert result.accepted is False
     assert "below minimum" in result.message
+
+
+class PartialFillMT5(FakeMT5):
+    def order_send(self, request):
+        self.request = request
+        return SimpleNamespace(
+            retcode=self.TRADE_RETCODE_DONE_PARTIAL,
+            order=12345,
+            comment="partially filled",
+            volume=0.02,
+            price=1.085,
+        )
+
+
+def test_gateway_accepts_partial_fill_retcode(bridge_config: MT5BridgeConfig) -> None:
+    live_config = MT5BridgeConfig(symbols=bridge_config.symbols, dry_run=False)
+    gateway = LazyMT5Gateway(live_config, mt5_module=PartialFillMT5())
+
+    result = gateway.order_send(
+        MT5OrderRequest(symbol="EURUSD", side="buy", volume=0.05)
+    )
+
+    assert result.accepted is True
+    assert result.filled_volume == 0.02
+    assert result.requested_volume == 0.05
 
 
 class AccountMT5(FakeMT5):

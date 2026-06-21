@@ -71,7 +71,10 @@ def _aggregate_completed_bars(
         bucket += anchor_seconds
         buckets.setdefault(bucket, []).append(bar)
 
+    latest_bucket = max(buckets)
+    final_slot_offset = bucket_seconds - source_seconds
     aggregated: dict[int, MT5Bar] = {}
+    sunday_fragments: set[int] = set()
     for bucket, items in sorted(buckets.items()):
         ordered = sorted(items, key=lambda item: item.time)
         actual_slots = {item.time for item in ordered}
@@ -82,6 +85,14 @@ def _aggregate_completed_bars(
         ]
         if not expected_slots or any(timestamp not in actual_slots for timestamp in expected_slots):
             continue
+        # A session may end before the bucket's nominal final slot (Friday close, holidays).
+        # Do not finalize such a latest bucket until a later bucket proves the session is over;
+        # otherwise a late DST-dependent bar can arrive after the strategy already processed it.
+        if (
+            bucket == latest_bucket
+            and expected_slots[-1] < bucket + final_slot_offset
+        ):
+            continue
         aggregated[bucket] = MT5Bar(
             time=bucket,
             open=ordered[0].open,
@@ -90,11 +101,14 @@ def _aggregate_completed_bars(
             close=ordered[-1].close,
             volume=sum(item.volume for item in ordered),
         )
+        if (
+            datetime.fromtimestamp(bucket, UTC).weekday() == 6
+            and len(expected_slots) < bucket_seconds // source_seconds / 2
+        ):
+            sunday_fragments.add(bucket)
 
     if merge_sunday_into_monday:
-        for bucket in list(aggregated):
-            if datetime.fromtimestamp(bucket, UTC).weekday() != 6:
-                continue
+        for bucket in sunday_fragments:
             monday_bucket = bucket + bucket_seconds
             sunday = aggregated.pop(bucket)
             monday = aggregated.get(monday_bucket)

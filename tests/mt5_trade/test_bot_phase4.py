@@ -83,6 +83,21 @@ def test_bot_tracks_partial_fill_volume() -> None:
     assert store.open_positions()["EURUSD"].volume == 0.03
 
 
+def test_bot_keeps_remaining_position_after_partial_close() -> None:
+    bridge = FakeBridge(
+        MT5OrderResult(accepted=True, order_id="d1", filled_volume=0.03)
+    )
+    store = MT5TradeStore(":memory:")
+    store.open_position("EURUSD", "buy", 0.05, 1.10)
+    bot = _bot(bridge, ScriptedStrategy([Signal("exit")]), store, vol=0.05)
+
+    bot.run_once()
+
+    position = store.open_positions()["EURUSD"]
+    assert position.side == "buy"
+    assert position.volume == 0.02
+
+
 def test_bot_builds_limit_order_with_price() -> None:
     bridge = FakeBridge(MT5OrderResult(accepted=True, order_id="d1", filled_volume=0.05))
     store = MT5TradeStore(":memory:")

@@ -193,6 +193,36 @@ def test_bot_risk_percent_prefers_live_equity_over_balance() -> None:
     assert bridge.orders[0].volume == 0.02
 
 
+def test_bot_rejects_pending_entry_with_risk_percent_sizing() -> None:
+    bridge = FakeBridge()
+    store = MT5TradeStore(":memory:")
+    cfg = MT5BotConfig(symbols=("EURUSD",), warmup_bars=1, poll_interval=1.0)
+    feed = ReplayDataFeed(
+        {"EURUSD": [MT5Bar(time=0, open=100, high=100, low=100, close=100)]}
+    )
+    sizer = PositionSizer(
+        mode="risk_percent",
+        risk_per_trade=1.0,
+        contract_size=100,
+    )
+    bot = MT5ForexBot(
+        bridge,
+        feed,
+        ScriptedStrategy(
+            [Signal("enter_long", order_kind="stop", price=110, stop_loss=90)]
+        ),
+        store,
+        cfg,
+        position_sizer=sizer,
+        account_balance=10_000,
+    )
+
+    bot.run_once()
+
+    assert bridge.orders == []
+    assert store.open_positions() == {}
+
+
 class SlippageRiskBridge(FakeBridge):
     def __init__(self, *, executable_price: float, fill_price: float) -> None:
         super().__init__()

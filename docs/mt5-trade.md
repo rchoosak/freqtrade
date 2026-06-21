@@ -195,6 +195,9 @@ multiple days or weeks. It consumes completed `H1` bars and builds:
   size at `0.50` lot, and skips the trade when the broker minimum lot would exceed the risk budget.
   Live sizing prefers broker equity (including floating PnL) over balance. The strategy
   intentionally emits no fixed take-profit.
+- Risk-percent sizing accepts market entries only. Pending limit/stop entries are rejected in both
+  live and backtest because a gap fill can change their stop exposure before the bot can resize
+  them. Pending entries remain available with fixed sizing.
 - `max_risk_amount` is denominated in the account currency. The direct stop-distance formula
   used by backtest and dry-run assumes a USD-denominated account for XAUUSD with
   `contract_size=100`; those offline modes do not perform automatic currency conversion.
@@ -215,8 +218,10 @@ completed H4 candle becomes available, so it is not an intrabar broker trailing 
 not align to midnight UTC. H4/D1 aggregation validates every expected H1 slot against the
 configured metals session (`session_break_hours`, `sunday_open_hour`, and `friday_close_hour`);
 unexpected gaps and shortened holiday candles are discarded. A completed Sunday fragment is
-merged into Monday rather than becoming a separate D1 candle. The defaults model the Dukascopy
-XAUUSD UTC session and may need adjustment for a broker with different trading hours.
+merged into Monday rather than becoming a separate D1 candle. A session ending before the nominal
+bucket boundary is finalized only after the next bucket starts, preventing a late DST-dependent
+Friday bar from being ignored. The defaults model the Dukascopy XAUUSD UTC session and may need
+adjustment for a broker with different trading hours.
 
 The default parameters require `3720` H1 bars; configure at least `warmup_bars=4000`. A complete
 Dukascopy download/backtest configuration is available at

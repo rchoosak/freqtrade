@@ -150,8 +150,11 @@ class LazyMT5Gateway:
     def _parse_result(self, response: Any) -> MT5OrderResult:
         retcode = getattr(response, "retcode", None)
         done_code = getattr(self.mt5, "TRADE_RETCODE_DONE", None)
+        partial_code = getattr(self.mt5, "TRADE_RETCODE_DONE_PARTIAL", None)
         placed_code = getattr(self.mt5, "TRADE_RETCODE_PLACED", None)
-        success_codes = {code for code in (done_code, placed_code) if code is not None}
+        success_codes = {
+            code for code in (done_code, partial_code, placed_code) if code is not None
+        }
         accepted = retcode is not None and retcode in success_codes
         is_pending = accepted and placed_code is not None and retcode == placed_code
         order_attr = getattr(response, "order", None)

@@ -140,6 +140,29 @@ def test_backtest_uses_risk_percent_sizing() -> None:
     assert result.return_pct == 1.0
 
 
+def test_backtest_rejects_pending_entry_with_risk_percent_sizing() -> None:
+    strategy = ScriptedStrategy(
+        [Signal("enter_long", order_kind="stop", price=110, stop_loss=90)]
+    )
+    sizer = PositionSizer(
+        mode="risk_percent",
+        risk_per_trade=1.0,
+        contract_size=100,
+    )
+
+    result = run_backtest(
+        strategy,
+        {"XAUUSD": _bars([100, 120])},
+        warmup_bars=10,
+        starting_balance=10_000,
+        contract_size=100,
+        position_sizer=sizer,
+    )
+
+    assert result.num_trades == 0
+    assert result.skipped_entries == 1
+
+
 def test_backtest_skips_risk_entry_when_min_lot_exceeds_risk() -> None:
     strategy = ScriptedStrategy([Signal("enter_long", stop_loss=80), Signal("exit")])
     sizer = PositionSizer.from_config(

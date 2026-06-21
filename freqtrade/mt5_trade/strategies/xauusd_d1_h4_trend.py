@@ -116,6 +116,7 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
         self._position_sides: dict[str, OrderSide] = {}
         self._last_h4_time: dict[str, int] = {}
         self._trailing_stops: dict[str, float] = {}
+        self._pending_exits: dict[str, Signal] = {}
 
     @property
     def required_timeframe(self) -> str:
@@ -141,14 +142,17 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
         if side is None:
             self._position_sides.pop(symbol, None)
             self._trailing_stops.pop(symbol, None)
+            self._pending_exits.pop(symbol, None)
         else:
             if self._position_sides.get(symbol) != side:
                 self._trailing_stops.pop(symbol, None)
+                self._pending_exits.pop(symbol, None)
             self._position_sides[symbol] = side
 
     def on_position_closed(self, symbol: str) -> None:
         self._position_sides.pop(symbol, None)
         self._trailing_stops.pop(symbol, None)
+        self._pending_exits.pop(symbol, None)
 
     def persistent_position_state(self, symbol: str) -> dict[str, Any] | None:
         stop = self._trailing_stops.get(symbol)
@@ -192,15 +196,22 @@ class XauusdD1H4TrendStrategy(MT5Strategy):
         if len(h4_bars) < self._minimum_h4_bars or len(d1_bars) < self._minimum_d1_bars:
             return HOLD
 
+        side = self._position_sides.get(symbol)
+        pending_exit = self._pending_exits.get(symbol)
+        if side is not None and pending_exit is not None:
+            return pending_exit
+
         h4_time = h4_bars[-1].time
         if self._last_h4_time.get(symbol) == h4_time:
             return HOLD
         self._last_h4_time[symbol] = h4_time
 
-        side = self._position_sides.get(symbol)
         if side is not None:
             exit_signal = self._exit_signal(symbol, side, h4_bars, d1_bars)
-            return exit_signal if exit_signal is not None else HOLD
+            if exit_signal is None:
+                return HOLD
+            self._pending_exits[symbol] = exit_signal
+            return exit_signal
 
         regime = self._d1_regime(d1_bars)
         if regime == "long" and self._h4_breakout(h4_bars, "buy"):
@@ -363,7 +374,7 @@ def _validate_session_hours(
         raise ValueError("sunday_open_hour must be between 0 and 23.")
     if not 0 <= friday_close_hour <= 24:
         raise ValueError("friday_close_hour must be between 0 and 24.")
-    break_hours = tuple(session_break_hours or (21, 22))
+    break_hours = tuple((21, 22) if session_break_hours is None else session_break_hours)
     if any(not isinstance(hour, int) or not 0 <= hour <= 23 for hour in break_hours):
         raise ValueError("session_break_hours must contain UTC hours between 0 and 23.")
     return break_hours
